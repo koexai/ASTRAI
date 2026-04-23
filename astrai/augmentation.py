@@ -1,0 +1,148 @@
+"""
+astrai.augmentation - Data augmentation pipeline for light-curve training.
+
+Combines additive Gaussian noise with LSST-realistic cadence degradation
+(sun masking + cloud masking) followed by linear interpolation to fill
+masked epochs.  This encourages the network to generalize across
+observational conditions rather than overfitting to uniform-cadence data.
+"""
+import numpy as np
+from astrai import lsst
+
+
+def add_gaussian_noise_slow(X, noise_std):
+    """Add i.i.d. Gaussian noise to each element (fully random, slower).
+
+    Parameters
+    ----------
+    X : numpy.ndarray
+        Input batch of shape ``(n_samples, series_length)``.
+    noise_std : float
+        Standard deviation of the additive noise.
+
+    Returns
+    -------
+    numpy.ndarray
+        Noisy copy of *X* with the same shape.
+    """
+    noise = np.random.randn(*X.shape)
+    return X + noise_std * noise
+
+
+def add_gaussian_noise(X, noise_std):
+    """Add Gaussian noise using a tiled pseudo-random vector (fast variant).
+
+    Generates a single random vector of length ``n_samples`` and tiles it
+    across the series dimension.  This is ~2x faster than full-random
+    sampling for large batches while still providing sufficient
+    perturbation for regularization purposes.
+
+    Parameters
+    ----------
+    X : numpy.ndarray
+        Input batch of shape ``(n_samples, series_length)``.
+    noise_std : float
+        Standard deviation of the additive noise.
+
+    Returns
+    -------
+    numpy.ndarray
+        Noisy copy of *X* with the same shape.
+    """
+    fast_pseudo_rands = np.tile(np.random.randn((len(X))), len(X[0]))
+    return X + noise_std * fast_pseudo_rands.reshape(*X.shape)
+
+
+def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
+    """
+    Apply exp, add Gaussian noise proportional to sqrt(value),
+    then take log and return.
+    
+    Parameters
+    ----------
+    x : array-like
+        Input values (log-scale).
+    sigma : float
+        Noise scale factor.
+    eps : float
+        Small value to avoid log(0).
+    random_state : int or None
+        Seed for reproducibility.
+    
+    Returns
+    -------
+    noisy_x : np.ndarray
+        Noisy values in log-scale.
+    """
+    
+    x = np.asarray(x, dtype=float)
+    
+    if random_state is not None:
+        np.random.seed(random_state)
+    
+    # Go to linear space
+    y = np.exp(x)
+    
+    # Standard deviation proportional to sqrt(y)
+    std = sigma * np.sqrt(y)
+    
+    # Add Gaussian noise
+    noise = np.random.normal(loc=0.0, scale=std, size=y.shape)
+    y_noisy = y + noise
+    
+    # Avoid negative / zero values
+    y_noisy = np.maximum(y_noisy, eps)
+    
+    # Back to log space
+    return np.log(y_noisy), np.log(y+std)-np.log(y-std)
+
+
+def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
+    """Full augmentation pipeline: noise injection + LSST cadence degradation.
+
+    For each light curve in the batch:
+    1. Add Gaussian noise to the full-cadence curve.
+    2. Generate stochastic sun and cloud masks via ``astrai.lsst``.
+    3. Retain only epochs that survive both masks.
+    4. Linearly interpolate the surviving points back to the original grid.
+
+    Parameters
+    ----------
+    curves_batch : numpy.ndarray
+        Batch of clean light curves, shape ``(n_samples, n_days)``.
+    n_days : int
+        Number of time-steps per curve (= series length).
+    noise_std : float
+        Standard deviation of the Gaussian noise.
+    samples_per_day : int, optional
+        Number of digital samples per day. Defaults to ``lsst.DIG_SAMPLES_X_DAY``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Augmented light curves with the same shape as *curves_batch*.
+    """
+    if samples_per_day is None:
+        samples_per_day = lsst.DIG_SAMPLES_X_DAY
+
+    augmented = curves_batch.copy()
+
+    augmented = add_gaussian_noise(augmented, noise_std)
+
+    calendar = np.arange(n_days) / samples_per_day
+
+    for i in range(len(augmented)):
+        sun_mask = lsst.sun_masking_np(calendar)
+        cloud_mask = lsst.random_cloud_masking(np.ones_like(calendar))
+        combined_mask = (1 - sun_mask) * (1 - cloud_mask)
+
+        curve = augmented[i]
+        valid_idx = np.where(combined_mask == 1)[0]
+
+        if len(valid_idx) < 2:
+            continue
+
+        valid_vals = curve[valid_idx]
+        augmented[i] = np.interp(np.arange(n_days), valid_idx, valid_vals)
+
+    return augmented

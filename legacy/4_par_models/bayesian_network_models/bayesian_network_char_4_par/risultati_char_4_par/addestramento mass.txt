@@ -1,0 +1,7 @@
+Addestramento per parametro: Mass
+Early stopping al passo 20 - Miglior val_loss: 0.2395 al passo 0
+Performance finali per Mass:
+R²: 0.7308
+RMSE: 0.5236
+MAE: 0.3864
+Numero iterazioni effettive: 0

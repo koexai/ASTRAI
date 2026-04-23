@@ -1,0 +1,35 @@
+data:
+  format: npy_csv
+  curves_path: legacy/4_par_synth_dataset/analyticModelEXPSOE_Run1_20230328_07-55-00.npy
+  params_path: legacy/4_par_synth_dataset/lista_amEXPSOE.csv
+  params_csv_sep: ";"
+  n_days: 421
+  n_params: 4
+  param_names: [Radius, Mass, Energy, Nichel]
+  samples_per_day: 1
+
+training:
+  batch_size: 4096
+  epochs: 1000
+  learning_rate: 0.001
+  n_splits: 2
+  random_seed: 42
+
+model:
+  pca_components: 32
+  width: 512
+  depth: 10
+  dropout: 0.1
+
+loss:
+  alpha_char: 1.0
+  alpha_gen: 1.0
+
+augmentation:
+  noise_std: 0.05
+
+checkpoint:
+  model: best_split_mlp_model.pth
+  x_scaler: best_split_mlp_x_scaler.pkl
+  y_scaler: best_split_mlp_y_scaler.pkl
+  pca: best_split_mlp_pca.pkl

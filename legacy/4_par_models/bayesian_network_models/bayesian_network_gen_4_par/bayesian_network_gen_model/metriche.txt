@@ -1,0 +1,44 @@
+CSV shape: (14300, 5)
+NPY shape: (14300, 421)
+Campioni validi: 14300
+Addestramento modelli Bayesian Ridge...
+Punto temporale 0/421
+Punto temporale 50/421
+Punto temporale 100/421
+Punto temporale 150/421
+Punto temporale 200/421
+Punto temporale 250/421
+Punto temporale 300/421
+Punto temporale 350/421
+Punto temporale 400/421
+Addestramento completato!
+R² medio: 0.8441
+R² min: 0.4877
+R² max: 0.9061
+RMSE medio: 0.1339
+
+Generazione curve da nuovi parametri:
+   Radius  Mass        Energy  Nichel
+0    10.0   1.4  1.000000e+51    0.10
+1    15.0   2.0  2.000000e+51    0.15
+2    20.0   2.5  3.000000e+51    0.20
+
+Hyperparameter tuning...
+
+Tuning for punto temporale 0:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.2142037933203477)
+
+Tuning for punto temporale 100:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 1e-06, 'alpha_2': 0.01, 'lambda_1': 0.01, 'lambda_2': 1e-06}, 0.24174717018726058)
+
+Tuning for punto temporale 200:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.09722520364559155)
+
+Tuning for punto temporale 300:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.09421710364720837)
+
+Tuning for punto temporale 420:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.09421710364720962)
+
+Modelli Bayesian Ridge addestrati per tutti i 421 punti temporali!
+Performance media: R² = 0.844, RMSE = 0.1339

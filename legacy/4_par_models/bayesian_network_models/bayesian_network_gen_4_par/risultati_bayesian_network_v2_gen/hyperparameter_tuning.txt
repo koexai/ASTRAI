@@ -1,0 +1,19 @@
+Hyperparameter tuning...
+
+Tuning for punto temporale 0:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.2142037933203477)
+
+Tuning for punto temporale 100:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 1e-06, 'alpha_2': 0.01, 'lambda_1': 0.01, 'lambda_2': 1e-06}, 0.24174717018726058)
+
+Tuning for punto temporale 200:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.09722520364559155)
+
+Tuning for punto temporale 300:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.09421710364720837)
+
+Tuning for punto temporale 420:
+Migliori parametri: ({'n_iter': 100, 'alpha_1': 0.01, 'alpha_2': 1e-06, 'lambda_1': 1e-06, 'lambda_2': 0.01}, 0.09421710364720962)
+
+Modelli Bayesian Ridge addestrati per tutti i 421 punti temporali!
+Performance media: R² = 0.844, RMSE = 0.1339

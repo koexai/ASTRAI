@@ -1,0 +1,12 @@
+CSV shape: (14300, 5)
+NPY shape: (14300, 421)
+Campioni validi: 14300
+Addestramento modelli Bayesian Ridge con early stopping...
+
+Addestramento per parametro: Radius
+Early stopping al passo 20 - Miglior val_loss: 0.0038 al passo 0
+Performance finali per Radius:
+R²: 0.9960
+RMSE: 0.0637
+MAE: 0.0484
+Numero iterazioni effettive: 0

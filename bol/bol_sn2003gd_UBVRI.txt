@@ -1,0 +1,26 @@
+# ph	Lobs	err	L+BB	err	
+
+52811.40	1.08e+41	4.38e+39	4.73e+41	3.31e+41
+52817.40	8.57e+40	3.36e+39	3.19e+41	2.51e+41
+52841.30	2.14e+40	9.75e+38	1.19e+41	8.03e+40
+52843.30	1.32e+40	6.20e+38	7.86e+40	4.87e+40
+52845.40	8.63e+39	4.17e+38	5.53e+40	3.13e+40
+52870.30	6.05e+39	2.92e+38	2.70e+40	1.33e+40
+52906.20	4.73e+39	2.26e+38	1.67e+40	6.87e+39
+52908.20	4.63e+39	2.21e+38	1.63e+40	6.63e+39
+52952.20	3.12e+39	1.63e+38	9.07e+39	3.07e+39
+52967.20	2.50e+39	1.20e+38	7.51e+39	2.52e+39
+52988.10	2.16e+39	1.03e+38	6.00e+39	2.23e+39
+53000.00	1.83e+39	8.60e+37	4.72e+39	1.94e+39
+53019.00	1.59e+39	7.28e+37	4.06e+39	1.79e+39
+
+#KEY
+# Lobs = integrate observed fluxes with no BB fit
+# L+BB = observed flux + BB fit extrapolation
+# See logL-obs_sn2003gd_UBVRI.txt and logL-bb_sn2003gd_UBVRI.txt for simple LC files
+# Methodology:
+# filters used:UBVRI
+# redshift used:0.00119
+# extinction used:0.069
+# Flux and wavelength converted to rest-frame
+# BB fit below 1A suppressed by factor (lamda/1)^0
