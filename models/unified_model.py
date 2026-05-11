@@ -1,5 +1,5 @@
 """
-astrai.models.unified_model - Bi-directional characterization / generation wrapper.
+models.unified_model - Bi-directional characterization / generation wrapper.
 
 The ``UnifiedModel`` couples two sub-networks trained jointly with a
 weighted composite loss:
@@ -10,11 +10,13 @@ where ``L_char`` supervises the *characterization* branch (curves -> params)
 and ``L_gen`` supervises the *generation* branch (params -> curves) using
 teacher-forced ground-truth parameters.
 """
-import torch.nn as nn
+from torch import nn
 
 
 class UnifiedModel(nn.Module):
-    """Wrapper holding both the Regressor (curves -> params) and the Generator (params -> curves).
+    """Wrapper holding both models
+    - Regressor (curves -> params)
+    - Generator (params -> curves).
 
     Parameters
     ----------
@@ -29,8 +31,18 @@ class UnifiedModel(nn.Module):
         self.regressor = regressor
         self.generator = generator
 
-    def fit(self, train_loader, optimizer, criterion_char, criterion_gen, device,
-            epochs=10, alpha_char=1.0, alpha_gen=1.0, scheduler=None):
+    def fit(
+        self,
+        train_loader,
+        optimizer,
+        criterion_char,
+        criterion_gen,
+        device,
+        epochs=10,
+        alpha_char=1.0,
+        alpha_gen=1.0,
+        scheduler=None,
+    ):
         """Train both branches end-to-end for a given number of epochs.
 
         Parameters
@@ -79,7 +91,8 @@ class UnifiedModel(nn.Module):
                 scheduler.step()
 
             if (epoch + 1) % 10 == 0:
-                lr_info = ""
+                lr_info = loss_info = ""
                 if scheduler is not None:
                     lr_info = f" | LR: {optimizer.param_groups[0]['lr']:.2e}"
-                print(f"Epoch {epoch+1}/{epochs} - Avg Loss: {total_loss/len(train_loader):.6f}{lr_info}")
+                    loss_info = f"Avg Loss: {total_loss/len(train_loader):.6f}"
+                print(f"Epoch {epoch+1}/{epochs} - {loss_info}{lr_info}")

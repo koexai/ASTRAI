@@ -1,12 +1,12 @@
 """
-astrai.models.residual_blocks - Pre-activation residual blocks and residual MLP.
+models.residual_blocks - Pre-activation residual blocks and residual MLP.
 
 Implements the core building blocks used by all network architectures in
 ASTRAI.  The design follows the *pre-activation* residual pattern
 (BN -> activation -> dropout -> linear + skip) which empirically
 stabilizes training for narrow, deep regression networks.
 """
-import torch.nn as nn
+from torch import nn
 
 
 class ResidualBlock(nn.Module):

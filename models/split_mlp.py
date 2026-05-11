@@ -1,5 +1,5 @@
 """
-astrai.models.split_mlp - Parameter-wise split MLP regressor.
+models.split_mlp - Parameter-wise split MLP regressor.
 
 Instead of a single shared network for all target parameters, this module
 instantiates one independent ``MLPWithResiduals`` sub-network per output
@@ -8,7 +8,7 @@ quantities (e.g. mass vs. nickel fraction) at the cost of a linear
 increase in parameter count.
 """
 import torch
-import torch.nn as nn
+from torch import nn
 from .residual_blocks import MLPWithResiduals
 
 
@@ -34,10 +34,12 @@ class SplitMLPRegressor(nn.Module):
 
     def __init__(self, input_dim, width, num_params, depth, dropout):
         super().__init__()
-        self.nets = nn.ModuleList([
-            MLPWithResiduals(input_dim, width, 1, depth, dropout)
-            for _ in range(num_params)
-        ])
+        self.nets = nn.ModuleList(
+            [
+                MLPWithResiduals(input_dim, width, 1, depth, dropout)
+                for _ in range(num_params)
+            ]
+        )
 
     def forward(self, x):
         """Run each sub-network and concatenate scalar outputs."""
