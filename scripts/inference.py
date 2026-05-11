@@ -27,24 +27,22 @@ import torch
 import joblib
 import yaml
 
-from astrai.models import SplitMLPRegressor, MLPWithResiduals, UnifiedModel
-from astrai.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
+from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
+from models.unified_model import UnifiedModel
+from utils.metrics import (
+    get_rmse,
+    get_mae,
+    get_r_squared,
+    get_rrmse,
+    compute_metrics,
+)
+from utils.checkpoints import load_data
 
 
 def load_config(path="configs/default.yaml"):
     """Load and parse the YAML training configuration file.
-
-    Parameters
-    ----------
-    path : str
-        Path to the YAML config file.
-
-    Returns
-    -------
-    dict
-        Nested configuration dictionary.
-    """
-    with open(path) as f:
+    Returns a dict."""
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -80,11 +78,25 @@ def load_model(cfg, device, exp_dir=None):
         name = cfg["checkpoint"][key]
         return os.path.join(exp_dir, name) if exp_dir else name
 
-    regressor = SplitMLPRegressor(input_dim=n_pca, width=width, num_params=n_params, depth=depth, dropout=dropout)
-    generator = MLPWithResiduals(input_dim=n_params, width=width, out_dim=n_pca, depth=depth, dropout=dropout)
+    regressor = SplitMLPRegressor(
+        input_dim=n_pca,
+        width=width,
+        num_params=n_params,
+        depth=depth,
+        dropout=dropout,
+    )
+    generator = MLPWithResiduals(
+        input_dim=n_params,
+        width=width,
+        out_dim=n_pca,
+        depth=depth,
+        dropout=dropout,
+    )
     model = UnifiedModel(regressor, generator).to(device)
 
-    model.load_state_dict(torch.load(_path("model"), map_location=device, weights_only=True))
+    model.load_state_dict(
+        torch.load(_path("model"), map_location=device, weights_only=True)
+    )
     model.eval()
 
     x_scaler = joblib.load(_path("x_scaler"))
@@ -94,59 +106,7 @@ def load_model(cfg, device, exp_dir=None):
     return model, x_scaler, y_scaler, pca
 
 
-def load_data(data_path, cfg):
-    """Read a dataset and extract light curves and (optional) labels.
-
-    Supports two formats controlled by ``cfg["data"]["format"]``:
-
-    - ``parquet`` (default): a single Parquet file with curve columns
-      ``"0"``..``"n_days-1"`` and named parameter columns.
-    - ``npy_csv``: a ``.npy`` file for curves and a ``.csv`` file for
-      parameters.  When *data_path* is ``None`` the paths are taken from
-      the config keys ``curves_path`` and ``params_path``.
-
-    Parameters
-    ----------
-    data_path : str or None
-        Override path.  For ``parquet`` this is the parquet file; for
-        ``npy_csv`` it is ignored (paths come from the config).
-    cfg : dict
-        Parsed YAML configuration (used for column names and n_days).
-
-    Returns
-    -------
-    tuple
-        ``(X, y)`` where *y* is ``None`` when labels are absent.
-    """
-    data_cfg = cfg["data"]
-    fmt = data_cfg.get("format", "parquet")
-    n_days = data_cfg["n_days"]
-    param_names = data_cfg["param_names"]
-
-    if fmt == "npy_csv":
-        X = np.load(data_cfg["curves_path"]).astype("float32")
-        sep = data_cfg.get("params_csv_sep", ",")
-        params_df = pd.read_csv(data_cfg["params_path"], sep=sep)
-        has_labels = all(p in params_df.columns for p in param_names)
-        y = None
-        if has_labels:
-            y = params_df[param_names].values.astype("float32")
-            y = np.log1p(y)
-    else:
-        curve_cols = [str(i) for i in range(n_days)]
-        path = data_path or data_cfg["path"]
-        df = pd.read_parquet(path)
-        X = df[curve_cols].values.astype("float32")
-        has_labels = all(p in df.columns for p in param_names)
-        y = None
-        if has_labels:
-            y = df[param_names].values.astype("float32")
-            y = np.log1p(y)
-
-    return X, y
-
-
-def characterize(model, X, x_scaler, y_scaler, pca, device):
+def characterize(model, x, x_scaler, y_scaler, pca, device):
     """Characterization branch: curves -> predicted physical parameters.
 
     Applies feature scaling, PCA compression, regressor forward pass,
@@ -157,7 +117,7 @@ def characterize(model, X, x_scaler, y_scaler, pca, device):
     ----------
     model : UnifiedModel
         Trained unified model in eval mode.
-    X : numpy.ndarray
+    x : numpy.ndarray
         Raw light curves of shape ``(n_samples, n_days)``.
     x_scaler : StandardScaler
         Fitted feature scaler.
@@ -173,12 +133,12 @@ def characterize(model, X, x_scaler, y_scaler, pca, device):
     numpy.ndarray
         Predicted parameters of shape ``(n_samples, n_params)``.
     """
-    X_scaled = x_scaler.transform(X)
-    X_pca = pca.transform(X_scaled)
+    x_scaled = x_scaler.transform(x)
+    x_pca = pca.transform(x_scaled)
 
     with torch.no_grad():
-        X_tensor = torch.FloatTensor(X_pca).to(device)
-        pred_params_sc = model.regressor(X_tensor).cpu().numpy()
+        x_tensor = torch.FloatTensor(x_pca).to(device)
+        pred_params_sc = model.regressor(x_tensor).cpu().numpy()
 
     pred_params = y_scaler.inverse_transform(pred_params_sc)
     return pred_params
@@ -222,47 +182,6 @@ def generate(model, y, x_scaler, y_scaler, pca, device):
     return pred_curves
 
 
-def compute_metrics(true, pred, n_cols=None):
-    """Compute regression metrics between ground truth and predictions.
-
-    When ``n_cols`` is provided, metrics are computed per-column and then
-    averaged (used for characterization with multiple physical parameters).
-    Otherwise, arrays are flattened before computing (used for generation).
-
-    Parameters
-    ----------
-    true : numpy.ndarray
-        Ground-truth values.
-    pred : numpy.ndarray
-        Predicted values (same shape as *true*).
-    n_cols : int, optional
-        Number of columns for per-column averaging. If ``None``, arrays
-        are flattened.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys ``"R2"``, ``"RMSE"``, ``"RRMSE"``, ``"MAE"``.
-    """
-    if n_cols is not None:
-        rmse_vals = [get_rmse(true[:, i], pred[:, i]) for i in range(n_cols)]
-        rrmse_vals = [get_rrmse(true[:, i], pred[:, i]) for i in range(n_cols)]
-        mae_vals = [get_mae(true[:, i], pred[:, i]) for i in range(n_cols)]
-        r2_vals = [get_r_squared(true[:, i], pred[:, i]) for i in range(n_cols)]
-        return {
-            "R2": (np.mean(r2_vals), np.std(r2_vals)),
-            "RMSE": (np.mean(rmse_vals), np.std(rmse_vals)),
-            "RRMSE": (np.mean(rrmse_vals), np.std(rrmse_vals)),
-            "MAE": (np.mean(mae_vals), np.std(mae_vals)),
-        }
-    else:
-        rmse = get_rmse(true.ravel(), pred.ravel())
-        rrmse = get_rrmse(true.ravel(), pred.ravel())
-        mae = get_mae(true.ravel(), pred.ravel())
-        r2 = get_r_squared(true.ravel(), pred.ravel())
-        return {"R2": r2, "RMSE": rmse, "RRMSE": rrmse, "MAE": mae}
-
-
 def print_metrics(name, metrics):
     """Pretty-print a named block of evaluation metrics.
 
@@ -283,16 +202,44 @@ def print_metrics(name, metrics):
 
 
 def main():
-    """Entry point: parse CLI args, load model/data, run inference, and report."""
-    parser = argparse.ArgumentParser(description="Run inference with a trained ASTRAI model.")
-    parser.add_argument("--data", type=str, default=None,
-                        help="Path to input parquet file (defaults to config data path)")
-    parser.add_argument("--config", type=str, default="configs/default.yaml",
-                        help="Path to config YAML")
-    parser.add_argument("--exp", type=str, default=None,
-                        help="Experiment directory containing checkpoint files")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Path to save predictions as parquet")
+    """Entry point: parse CLI args, load model/data, run inference, and report.
+    Steps:
+    1. Parse command-line args for config, data, experiment, and output path.
+    2. Load the YAML config and determine compute device.
+    3. Load the trained model and preprocessing artifacts from the experiment directory.
+    4. Load the input data (light curves and optionally parameters).
+    5. Run characterization to predict parameters from curves
+        and compute metrics if labels are available.
+    6. Run generation to reconstruct curves from ground-truth parameters
+        and compute metrics if labels are available.
+    7. Optionally save predictions to a Parquet file."""
+    parser = argparse.ArgumentParser(
+        description="Run inference with a trained ASTRAI model."
+    )
+    parser.add_argument(
+        "--data",
+        type=str,
+        default=None,
+        help="Path to input parquet file (defaults to config data path)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default.yaml",
+        help="Path to config YAML",
+    )
+    parser.add_argument(
+        "--exp",
+        type=str,
+        default=None,
+        help="Experiment directory containing checkpoint files",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Path to save predictions as parquet",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -310,18 +257,20 @@ def main():
     # Load input data (labels are optional)
     fmt = cfg["data"].get("format", "parquet")
     if fmt == "npy_csv":
-        print(f"Loading data from: {cfg['data']['curves_path']} + {cfg['data']['params_path']}")
+        print(
+            f"Loading data from: {cfg['data']['curves_path']} + {cfg['data']['params_path']}"
+        )
     else:
         print(f"Loading data from: {data_path}")
-    X, y = load_data(data_path, cfg)
+    x, y = load_data(data_path, cfg)
     has_labels = y is not None
 
     n_params = cfg["data"]["n_params"]
     param_names = cfg["data"]["param_names"]
 
     # Characterization: curves -> physical parameters
-    print(f"\nRunning characterization ({len(X)} samples)...")
-    pred_params = characterize(model, X, x_scaler, y_scaler, pca, device)
+    print(f"\nRunning characterization ({len(x)} samples)...")
+    pred_params = characterize(model, x, x_scaler, y_scaler, pca, device)
 
     if has_labels:
         char_metrics = compute_metrics(y, pred_params, n_cols=n_params)
@@ -330,8 +279,12 @@ def main():
         # Per-parameter breakdown for detailed diagnostics (with bootstrap ±)
         n_boot = 100
         rng = np.random.default_rng(42)
-        print(f"\n  Per-parameter metrics (± from {n_boot} bootstrap resamples):")
-        print(f"  {'Parameter':<12} {'R2':>19} {'RMSE':>19} {'RRMSE':>19} {'MAE':>19}")
+        print(
+            f"\n  Per-parameter metrics (± from {n_boot} bootstrap resamples):"
+        )
+        print(
+            f"  {'Parameter':<12} {'R2':>19} {'RMSE':>19} {'RRMSE':>19} {'MAE':>19}"
+        )
         print(f"  {'-'*12} {'-'*19} {'-'*19} {'-'*19} {'-'*19}")
         for i, name in enumerate(param_names):
             true_i, pred_i = y[:, i], pred_params[:, i]
@@ -346,18 +299,24 @@ def main():
             rmse_m, rmse_s = np.mean(boot["RMSE"]), np.std(boot["RMSE"])
             rrmse_m, rrmse_s = np.mean(boot["RRMSE"]), np.std(boot["RRMSE"])
             mae_m, mae_s = np.mean(boot["MAE"]), np.std(boot["MAE"])
-            print(f"  {name:<12} {r2_m:.4f}±{r2_s:.4f}  {rmse_m:.4f}±{rmse_s:.4f}  {rrmse_m:.4f}±{rrmse_s:.4f}  {mae_m:.4f}±{mae_s:.4f}")
+            r2f = f"{r2_m:.4f}±{r2_s:.4f}"
+            rmsef = f"{rmse_m:.4f}±{rmse_s:.4f}"
+            rrmsef = f"{rrmse_m:.4f}±{rrmse_s:.4f}"
+            maef = f"{mae_m:.4f}±{mae_s:.4f}"
+            print(f"  {name:<12} {r2f} {rmsef} {rrmsef} {maef}")
 
     # Generation: ground-truth params -> reconstructed curves
     if has_labels:
         print(f"\nRunning generation ({len(y)} samples)...")
         pred_curves = generate(model, y, x_scaler, y_scaler, pca, device)
-        gen_metrics = compute_metrics(X, pred_curves)
+        gen_metrics = compute_metrics(x, pred_curves)
         print_metrics("GENERATION", gen_metrics)
 
     # Optionally persist predictions to Parquet
     if args.output:
-        results = pd.DataFrame(pred_params, columns=[f"pred_{p}" for p in param_names])
+        results = pd.DataFrame(
+            pred_params, columns=[f"pred_{p}" for p in param_names]
+        )
         if has_labels:
             for i, p in enumerate(param_names):
                 results[f"true_{p}"] = y[:, i]
