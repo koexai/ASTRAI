@@ -7,15 +7,15 @@ masked epochs.  This encourages the network to generalize across
 observational conditions rather than overfitting to uniform-cadence data.
 """
 import numpy as np
-from astrai import lsst
+from utils import lsst
 
 
-def add_gaussian_noise_slow(X, noise_std):
+def add_gaussian_noise_slow(x, noise_std):
     """Add i.i.d. Gaussian noise to each element (fully random, slower).
 
     Parameters
     ----------
-    X : numpy.ndarray
+    x : numpy.ndarray
         Input batch of shape ``(n_samples, series_length)``.
     noise_std : float
         Standard deviation of the additive noise.
@@ -23,13 +23,13 @@ def add_gaussian_noise_slow(X, noise_std):
     Returns
     -------
     numpy.ndarray
-        Noisy copy of *X* with the same shape.
+        Noisy copy of *x* with the same shape.
     """
-    noise = np.random.randn(*X.shape)
-    return X + noise_std * noise
+    noise = np.random.randn(*x.shape)
+    return x + noise_std * noise
 
 
-def add_gaussian_noise(X, noise_std):
+def add_gaussian_noise(x, noise_std):
     """Add Gaussian noise using a tiled pseudo-random vector (fast variant).
 
     Generates a single random vector of length ``n_samples`` and tiles it
@@ -39,7 +39,7 @@ def add_gaussian_noise(X, noise_std):
 
     Parameters
     ----------
-    X : numpy.ndarray
+    x : numpy.ndarray
         Input batch of shape ``(n_samples, series_length)``.
     noise_std : float
         Standard deviation of the additive noise.
@@ -47,17 +47,17 @@ def add_gaussian_noise(X, noise_std):
     Returns
     -------
     numpy.ndarray
-        Noisy copy of *X* with the same shape.
+        Noisy copy of *x* with the same shape.
     """
-    fast_pseudo_rands = np.tile(np.random.randn((len(X))), len(X[0]))
-    return X + noise_std * fast_pseudo_rands.reshape(*X.shape)
+    fast_pseudo_rands = np.tile(np.random.randn((len(x))), len(x[0]))
+    return x + noise_std * fast_pseudo_rands.reshape(*x.shape)
 
 
 def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
     """
     Apply exp, add Gaussian noise proportional to sqrt(value),
     then take log and return.
-    
+
     Parameters
     ----------
     x : array-like
@@ -68,33 +68,33 @@ def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
         Small value to avoid log(0).
     random_state : int or None
         Seed for reproducibility.
-    
+
     Returns
     -------
     noisy_x : np.ndarray
         Noisy values in log-scale.
     """
-    
+
     x = np.asarray(x, dtype=float)
-    
+
     if random_state is not None:
         np.random.seed(random_state)
-    
+
     # Go to linear space
     y = np.exp(x)
-    
+
     # Standard deviation proportional to sqrt(y)
     std = sigma * np.sqrt(y)
-    
+
     # Add Gaussian noise
     noise = np.random.normal(loc=0.0, scale=std, size=y.shape)
     y_noisy = y + noise
-    
+
     # Avoid negative / zero values
     y_noisy = np.maximum(y_noisy, eps)
-    
+
     # Back to log space
-    return np.log(y_noisy), np.log(y+std)-np.log(y-std)
+    return np.log(y_noisy), np.log(y + std) - np.log(y - std)
 
 
 def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
@@ -131,7 +131,7 @@ def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
 
     calendar = np.arange(n_days) / samples_per_day
 
-    for i in range(len(augmented)):
+    for i, _ in enumerate(augmented):
         sun_mask = lsst.sun_masking_np(calendar)
         cloud_mask = lsst.random_cloud_masking(np.ones_like(calendar))
         combined_mask = (1 - sun_mask) * (1 - cloud_mask)

@@ -10,11 +10,8 @@ from datetime import datetime
 
 def create_experiment_dir(base_dir="experiments"):
     """Create a timestamped experiment directory.
-
-    Returns
-    -------
-    str
-        Path to the created experiment directory.
+    base_dir: the parent directory where experiment folders will be created
+    Returns the path to the created experiment directory.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     exp_dir = os.path.join(base_dir, timestamp)
@@ -23,7 +20,9 @@ def create_experiment_dir(base_dir="experiments"):
 
 
 def save_code(exp_dir, folder="."):
-    """Save all .py files into a zip archive inside the experiment directory."""
+    """Save all .py files into a zip archive inside the experiment directory.
+    exp_dir: the experiment directory where code.zip will be saved
+    folder: the folder to search for .py files (default is current directory)"""
     zip_path = os.path.join(exp_dir, "code.zip")
     files_to_zip = [f for f in os.listdir(folder) if f.endswith(".py")]
 
@@ -36,7 +35,10 @@ def save_code(exp_dir, folder="."):
 
 
 def save_config(exp_dir, config_path="configs/default.yaml"):
-    """Copy the config file into the experiment directory."""
+    """Copy the config file into the experiment directory.
+    exp_dir: the experiment directory where the config file will be saved
+    config_path: the path to the config file to be copied
+    """
     dst = os.path.join(exp_dir, os.path.basename(config_path))
     shutil.copy2(config_path, dst)
     print(f"Config saved to {dst}.")
