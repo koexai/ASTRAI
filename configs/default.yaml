@@ -27,7 +27,7 @@ augmentation:
   noise_std: 0.05
 
 checkpoint:
-  model: best_split_mlp_model.pth
-  x_scaler: best_split_mlp_x_scaler.pkl
-  y_scaler: best_split_mlp_y_scaler.pkl
-  pca: best_split_mlp_pca.pkl
+  model: experiments/20260306_162350/best_split_mlp_model.pth
+  x_scaler: experiments/20260306_162350/best_split_mlp_x_scaler.pkl
+  y_scaler: experiments/20260306_162350/best_split_mlp_y_scaler.pkl
+  pca: experiments/20260306_162350/best_split_mlp_pca.pkl
