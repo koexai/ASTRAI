@@ -63,6 +63,127 @@ python inference_split.py \
     --output predictions.parquet
 ```
 
+## Performance Benchmarks
+
+The benchmark commands below use placeholders deliberately. Replace them with
+a compatible configuration and experiment directories containing the required
+model checkpoints, fitted scalers and PCA artefacts. The reference runs used
+local experiment artefacts that are not included in this repository, so a
+clean checkout requires equivalent artefacts before the results can be
+reproduced.
+
+### End-to-End Inference Benchmark
+
+The `scripts/benchmark_end_to_end_inference.py` script measures warm inference
+latency for one light curve through the complete pipeline:
+
+```text
+LCObs -> PPReg -> predicted parameter values -> LCGen -> LCRec
+```
+
+The measured path includes input scaling, PCA transformations, the PPReg and
+LCGen forward passes, and inverse transformations to obtain the reconstructed
+light curve. Python start-up, disk I/O, data loading, checkpoint loading and
+model initialisation are excluded.
+
+Run the following command from the repository root:
+
+```bash
+/usr/bin/time -p python -m scripts.benchmark_end_to_end_inference \
+  --config path/to/config.yaml \
+  --exp-char path/to/characterizer-experiment \
+  --exp-gen path/to/generator-experiment \
+  --device cpu \
+  --threads 12 \
+  --warmup 200 \
+  --runs 20000
+```
+
+The command loads the configuration, PPReg and LCGen checkpoints, preprocessing
+artefacts and input data once, before timing begins. It selects one light curve
+from the configured dataset and processes it individually during each cycle.
+
+Each cycle reports the latency of PPReg, LCGen and the complete end-to-end
+pipeline. The generated parameter values and reconstructed light curve remain
+in memory and are discarded; the script does not create or modify files.
+
+Use the `Full cycle` median as the representative warm inference time per
+observation. The `real` value reported by `/usr/bin/time` also includes process
+start-up, model and data loading, warm-up and all measured cycles.
+
+Reference result on an Apple M4 Max CPU with 12 PyTorch threads, Python 3.12.2
+and PyTorch 2.13.0:
+
+| Metric | Result |
+| --- | ---: |
+| Input size | 1 light curve × 421 points |
+| Warm-up cycles | 200 |
+| Measured cycles | 20,000 |
+| PPReg median latency | 0.225 ms |
+| LCGen median latency | 0.152 ms |
+| Full-cycle median latency | 0.377 ms |
+| Full-cycle mean latency | 0.385 ms |
+| Full-cycle 95th percentile | 0.405 ms |
+
+The full-cycle median corresponds to approximately 2,650 observations per
+second when curves are processed sequentially with the models already loaded
+in memory.
+
+### LCGen Batch Generation Benchmark
+
+The `scripts/benchmark_lcgen_generation.py` script measures warm, vectorised
+generation throughput:
+
+```text
+parameter values -> scaling -> LCGen -> inverse PCA -> light curves
+```
+
+Model and data loading, input-batch construction, process start-up and disk I/O
+are excluded from the measurement.
+
+Run the following command from the repository root:
+
+```bash
+/usr/bin/time -p python -u -m scripts.benchmark_lcgen_generation \
+  --config path/to/config.yaml \
+  --exp-gen path/to/generator-experiment \
+  --device cpu \
+  --threads 12 \
+  --sizes 1000000 \
+  --warmup 3 \
+  --warmup-size 1000000 \
+  --repeats 30
+```
+
+The command loads the configuration, LCGen checkpoint, preprocessing artefacts
+and parameter values once, before timing begins. It constructs each requested
+batch by repeating rows from the configured dataset.
+
+Each measured run includes parameter scaling, the LCGen forward pass, inverse
+PCA and inverse scaling to obtain the final light curves. The script reports
+the median, mean, standard deviation, time per curve and throughput. Generated
+curves remain in memory and are discarded. Terminal output is saved only if
+the caller explicitly uses shell redirection or a command such as `tee`.
+
+Reference result on an Apple M4 Max CPU with 12 PyTorch threads, Python 3.12.2
+and PyTorch 2.13.0:
+
+| Metric | Result |
+| --- | ---: |
+| Batch size | 1,000,000 curves |
+| Warm-up runs | 3 × 1,000,000 curves |
+| Measured repetitions | 30 |
+| Median batch time | 0.720667 s |
+| Median time per curve | 0.720667 µs |
+| Mean time per curve | 0.724431 ± 0.021485 µs |
+| Throughput | 1,387,604 curves/s |
+
+An optional comparison with another implementation can be requested by adding
+`--semi-analytic-seconds SECONDS_PER_CURVE`. The resulting speed-up is
+indicative only unless both measurements use equivalent hardware, software and
+execution conditions; the absolute LCGen time and throughput should therefore
+remain the primary results.
+
 ## Pipeline Details
 
 ### Preprocessing (`preprocess.py`)
