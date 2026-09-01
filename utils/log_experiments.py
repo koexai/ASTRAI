@@ -55,11 +55,20 @@ def save_code(exp_dir, folder="."):
     Files retain their paths relative to ``folder``. Generated data,
     experiment outputs, virtual environments, caches, and hidden directories
     are excluded.
+
+    Raises:
+        RuntimeError: If no Python source files are found.
     """
     zip_path = Path(exp_dir) / "code.zip"
+    source_files = list(_iter_python_files(folder))
+
+    if not source_files:
+        raise RuntimeError(
+            f"No Python source files found in {Path(folder).resolve()}."
+        )
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file_path, archive_path in _iter_python_files(folder):
+        for file_path, archive_path in source_files:
             zipf.write(file_path, archive_path)
 
     print(f"Code saved to {zip_path}.")
