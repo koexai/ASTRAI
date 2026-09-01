@@ -40,6 +40,24 @@ class SaveCodeTests(unittest.TestCase):
             with zipfile.ZipFile(exp_dir / "code.zip") as archive:
                 self.assertEqual(set(archive.namelist()), included)
 
+    def test_rejects_empty_source_archive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            ignored_file = root / "data" / "ignored.py"
+            ignored_file.parent.mkdir(parents=True)
+            ignored_file.write_text("pass\n")
+
+            exp_dir = root / "experiments" / "current"
+            exp_dir.mkdir(parents=True)
+
+            with self.assertRaisesRegex(
+                RuntimeError, "No Python source files found"
+            ):
+                save_code(exp_dir, folder=root)
+
+            self.assertFalse((exp_dir / "code.zip").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
