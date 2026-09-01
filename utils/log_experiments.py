@@ -2,10 +2,40 @@
 This module creates a timestamped experiment folder and saves
 the source code and config so that every run is reproducible.
 """
-import zipfile
 import os
 import shutil
+import zipfile
 from datetime import datetime
+from pathlib import Path
+
+
+_EXCLUDED_CODE_DIRS = {
+    "__MACOSX",
+    "__pycache__",
+    "data",
+    "experiments",
+    "preprocessed",
+    "venv",
+}
+
+
+def _iter_python_files(folder):
+    """Yield Python files and their paths relative to the source root."""
+    root = Path(folder).resolve()
+
+    for current_dir, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if not name.startswith(".")
+            and name not in _EXCLUDED_CODE_DIRS
+        )
+
+        current_path = Path(current_dir)
+        for filename in sorted(filenames):
+            if filename.endswith(".py"):
+                file_path = current_path / filename
+                yield file_path, file_path.relative_to(root).as_posix()
 
 
 def create_experiment_dir(base_dir="experiments"):
@@ -20,16 +50,17 @@ def create_experiment_dir(base_dir="experiments"):
 
 
 def save_code(exp_dir, folder="."):
-    """Save all .py files into a zip archive inside the experiment directory.
-    exp_dir: the experiment directory where code.zip will be saved
-    folder: the folder to search for .py files (default is current directory)"""
-    zip_path = os.path.join(exp_dir, "code.zip")
-    files_to_zip = [f for f in os.listdir(folder) if f.endswith(".py")]
+    """Save Python source files recursively into the experiment archive.
+
+    Files retain their paths relative to ``folder``. Generated data,
+    experiment outputs, virtual environments, caches, and hidden directories
+    are excluded.
+    """
+    zip_path = Path(exp_dir) / "code.zip"
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file_path in files_to_zip:
-            if os.path.exists(file_path):
-                zipf.write(file_path, os.path.basename(file_path))
+        for file_path, archive_path in _iter_python_files(folder):
+            zipf.write(file_path, archive_path)
 
     print(f"Code saved to {zip_path}.")
 
