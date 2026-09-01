@@ -24,6 +24,9 @@ characterizer:
     depth: 10
     dropout: 0.1
   training:
+    # Use null to run all cross-validation splits, or an integer to
+    # select one held-out fold.
+    held_out_fold: null
     batch_size: 4096
     epochs: 1000
     learning_rate: 0.001
@@ -40,6 +43,9 @@ generator:
     depth: 10
     dropout: 0.1
   training:
+    # Use null to run all cross-validation splits, or an integer to
+    # select one held-out fold.
+    held_out_fold: null
     batch_size: 4096
     epochs: 1000
     learning_rate: 0.001

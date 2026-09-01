@@ -25,6 +25,7 @@ from train import print_final_stats
 from models.split_mlp import MLPWithResiduals
 from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from utils.checkpoints import copy_preprocessing_artifacts
+from utils.fold_selection import resolve_fold_indices
 from utils.log_experiments import create_experiment_dir, save_code, save_config
 
 
@@ -144,6 +145,14 @@ def run_generator_training(
     str
         The experiment directory used.
     """
+    n_params = cfg["data"]["n_params"]
+    n_pca = cfg["preprocessing"]["pca_components"]
+    n_splits = cfg["preprocessing"]["n_splits"]
+    gen_cfg = cfg["generator"]
+
+    held_out_fold = gen_cfg["training"].get("held_out_fold")
+    fold_indices = resolve_fold_indices(held_out_fold, n_splits)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if exp_dir is None:
@@ -152,11 +161,6 @@ def run_generator_training(
         save_config(exp_dir, config_path=config_path)
     print(f"Generator experiment directory: {exp_dir}")
 
-    n_params = cfg["data"]["n_params"]
-    n_pca = cfg["preprocessing"]["pca_components"]
-    n_splits = cfg["preprocessing"]["n_splits"]
-    gen_cfg = cfg["generator"]
-
     history = {"RMSE": [], "RRMSE": [], "MAE": [], "R2": []}
     best_r2 = -np.inf
 
@@ -164,7 +168,12 @@ def run_generator_training(
         f"Starting Generator Training (MLPWithResiduals) with PCA ({n_pca} components)..."
     )
 
-    for fold_idx in range(1, n_splits + 1):
+    if held_out_fold is None:
+        print(f"Training all {n_splits} folds.")
+    else:
+        print(f"Training split with held-out fold {held_out_fold}.")
+
+    for fold_idx in fold_indices:
         start_time = time.time()
         fold_dir = os.path.join(prep_dir, f"fold_{fold_idx}")
 
@@ -238,7 +247,12 @@ def run_generator_training(
     print("GENERATOR - FINAL PERFORMANCE REPORT")
     print(f"PCA Components: {n_pca}")
     print("=" * 50)
-    print_final_stats("GENERATION", history)
+    if held_out_fold is None:
+        print_final_stats("GENERATION", history)
+    else:
+        print(f"\n--- GENERATION (Held-out fold {held_out_fold}) ---")
+        for key, values in history.items():
+            print(f"  {key}: {values[0]:.4f}")
     print("=" * 50)
 
     return exp_dir
