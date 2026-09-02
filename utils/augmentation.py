@@ -97,30 +97,38 @@ def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
     return np.log(y_noisy), np.log(y + std) - np.log(y - std)
 
 
-def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
-    """Full augmentation pipeline: noise injection + LSST cadence degradation.
+def apply_lsst_pipeline(
+    curves_batch,
+    n_days,
+    noise_std,
+    samples_per_day=None,
+):
+    """Apply noise and LSST cadence degradation to light curves.
 
-    For each light curve in the batch:
-    1. Add Gaussian noise to the full-cadence curve.
-    2. Generate stochastic sun and cloud masks via ``astrai.lsst``.
-    3. Retain only epochs that survive both masks.
-    4. Linearly interpolate the surviving points back to the original grid.
+    For each curve:
+    1. Add noise to the full-cadence curve.
+    2. Generate stochastic sun and cloud masks.
+    3. Retain the epochs that survive both masks.
+    4. Interpolate the retained samples onto the original grid.
 
     Parameters
     ----------
     curves_batch : numpy.ndarray
-        Batch of clean light curves, shape ``(n_samples, n_days)``.
+        Clean light curves with shape ``(n_samples, n_days)``.
     n_days : int
-        Number of time-steps per curve (= series length).
+        Number of time steps per curve.
     noise_std : float
-        Standard deviation of the Gaussian noise.
+        Standard deviation passed to the existing noise function.
     samples_per_day : int, optional
-        Number of digital samples per day. Defaults to ``lsst.DIG_SAMPLES_X_DAY``.
+        Digital samples per day. Defaults to
+        ``lsst.DIG_SAMPLES_X_DAY``.
 
     Returns
     -------
-    numpy.ndarray
-        Augmented light curves with the same shape as *curves_batch*.
+    tuple[numpy.ndarray, numpy.ndarray]
+        The augmented curves and a boolean mask identifying the samples
+        retained before interpolation. Both arrays have the same shape as
+        ``curves_batch``.
     """
     if samples_per_day is None:
         samples_per_day = lsst.DIG_SAMPLES_X_DAY
@@ -128,6 +136,7 @@ def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
     augmented = curves_batch.copy()
 
     augmented = add_gaussian_noise(augmented, noise_std)
+    retained_mask = np.zeros_like(augmented, dtype=bool)
 
     calendar = np.arange(n_days) / samples_per_day
 
@@ -138,6 +147,7 @@ def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
 
         curve = augmented[i]
         valid_idx = np.where(combined_mask == 1)[0]
+        retained_mask[i, valid_idx] = True
 
         if len(valid_idx) < 2:
             continue
@@ -145,4 +155,4 @@ def apply_lsst_pipeline(curves_batch, n_days, noise_std, samples_per_day=None):
         valid_vals = curve[valid_idx]
         augmented[i] = np.interp(np.arange(n_days), valid_idx, valid_vals)
 
-    return augmented
+    return augmented, retained_mask

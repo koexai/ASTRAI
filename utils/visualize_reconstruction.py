@@ -138,9 +138,13 @@ def plot_single(
     reconstructed_curve = model_reconstructed[idx]
 
     # LSST augmentation
-    augmented_curve = apply_lsst_pipeline(
-        x[idx : idx + 1], n_days, noise_std, samples_per_day=samples_per_day
-    )[0]
+    augmented_curves, _ = apply_lsst_pipeline(
+        x[idx: idx + 1],
+        n_days,
+        noise_std,
+        samples_per_day=samples_per_day,
+    )
+    augmented_curve = augmented_curves[0]
 
     # PCA-only reconstruction
     original_scaled = x_scaler.transform(x[idx : idx + 1])

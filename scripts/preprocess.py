@@ -113,8 +113,11 @@ def _process_fold(
     np.save(os.path.join(fold_dir, "test_idx.npy"), test_idx)
 
     print("  Applying LSST augmentation...")
-    x_train_aug = apply_lsst_pipeline(
-        x_train_clean, n_days, noise_std, samples_per_day=samples_per_day
+    x_train_aug, _ = apply_lsst_pipeline(
+        x_train_clean,
+        n_days,
+        noise_std,
+        samples_per_day=samples_per_day,
     )
 
     x_train_clean_pca = pca.transform(x_scaler.transform(x_train_clean))
