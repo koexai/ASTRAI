@@ -103,8 +103,11 @@ def _preprocess_fold(
         Fitted PCA object (trained on clean training data).
     """
     print(f"    [Fold {fold_idx}] Applying LSST augmentation...", end="\r")
-    x_train_aug = apply_lsst_pipeline(
-        x_train_clean, n_days, noise_std, samples_per_day=samples_per_day
+    x_train_aug, _ = apply_lsst_pipeline(
+        x_train_clean,
+        n_days,
+        noise_std,
+        samples_per_day=samples_per_day,
     )
 
     x_scaler = StandardScaler()
