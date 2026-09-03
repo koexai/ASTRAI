@@ -8,6 +8,7 @@ Usage::
 
     python main.py
     python main.py --config configs/default_split.yaml
+    python main.py --config configs/default_split.yaml --prep-out path/to/run
 """
 import argparse
 import yaml
@@ -34,17 +35,28 @@ def main():
         default="configs/default_split.yaml",
         help="Path to split config YAML",
     )
+    parser.add_argument(
+        "--prep-out",
+        default=None,
+        help=(
+            "Exact destination for the new preprocessing run. If omitted, "
+            "a timestamped directory is created under preprocessed/."
+        ),
+    )
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     # 1. Preprocessing (PCA + scalers fitted once, shared by both models)
-    prep_dir = "preprocessed"
     print("=" * 50)
     print("STAGE 1: PREPROCESSING")
     print("=" * 50)
-    run_preprocessing(cfg, out_dir=prep_dir)
+    prep_dir = run_preprocessing(
+        cfg,
+        out_dir=args.prep_out,
+        config_path=args.config,
+    )
 
     # 2. Characterizer training (own experiment dir)
     print("\n" + "=" * 50)
@@ -70,6 +82,7 @@ def main():
 
     print("\n" + "=" * 50)
     print("PIPELINE COMPLETE")
+    print(f"  Preprocessing: {prep_dir}")
     print(f"  Characterizer: {char_exp}")
     print(f"  Generator:     {gen_exp}")
     print("=" * 50)
