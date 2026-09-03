@@ -26,6 +26,15 @@ loss:
 augmentation:
   noise_std: 0.05
 
+visualisation:
+  y_label: '$\log_{10}(L_{\rm bol}\,[{\rm erg}\,{\rm s}^{-1}])$'
+  quantile_summary:
+    output_name: clean_light_curves_7par_quantiles
+    quantile_ranges:
+      Lower 20%: [0.0, 0.2]
+      Central 20%: [0.4, 0.6]
+      Upper 20%: [0.8, 1.0]
+
 checkpoint:
   model: experiments/20260306_162350/best_split_mlp_model.pth
   x_scaler: experiments/20260306_162350/best_split_mlp_x_scaler.pkl
