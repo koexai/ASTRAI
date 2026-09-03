@@ -23,7 +23,11 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from train import print_final_stats
 from models.split_mlp import SplitMLPRegressor
-from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
+from utils.metrics import (
+    METRIC_NAMES,
+    compute_parameter_metrics,
+)
+from utils.parameter_validation import validate_parameter_names
 from utils.checkpoints import copy_preprocessing_artifacts
 from utils.fold_selection import resolve_fold_indices
 from utils.log_experiments import create_experiment_dir, save_code, save_config
@@ -90,17 +94,19 @@ def _train_model(
 
 
 def _evaluate_characterizer(
-    model, x_test_pca, y_test, n_params, prep_dir, device
+    model, x_test_pca, y_test, param_names, prep_dir, device
 ):
-    """Evaluate characterizer on the test fold, return metrics dict and R2.
+    """Evaluate the characterizer and return aggregate and named metrics.
+
     Loads the y_scaler from prep_dir to inverse transform predictions.
     model: the trained characterizer model
     x_test_pca: (n_test, n_pca) PCA-transformed test curves
     y_test: (n_test, n_params) true parameters for the test set
-    n_params: number of parameters
+    param_names: ordered names of the predicted parameters
     prep_dir: directory containing preprocessing artifacts (expects y_scaler.pkl)
     device: torch.device to run on
-    Returns a dict of metrics (RMSE, RRMSE, MAE, R2)"""
+    Returns aggregate and per-parameter RMSE, RRMSE, MAE and R2 values.
+    """
     y_scaler = joblib.load(os.path.join(prep_dir, "y_scaler.pkl"))
 
     model.eval()
@@ -109,26 +115,62 @@ def _evaluate_characterizer(
         pred_sc = model(x_test_t).cpu().numpy()
         pred_params = y_scaler.inverse_transform(pred_sc)
 
+    return compute_parameter_metrics(y_test, pred_params, param_names)
+
+
+def _initialise_parameter_history(param_names):
+    """Create an empty metric history for every configured parameter."""
     return {
-        "RMSE": np.mean(
-            [get_rmse(y_test[:, i], pred_params[:, i]) for i in range(n_params)]
-        ),
-        "RRMSE": np.mean(
-            [
-                get_rrmse(y_test[:, i], pred_params[:, i])
-                for i in range(n_params)
-            ]
-        ),
-        "MAE": np.mean(
-            [get_mae(y_test[:, i], pred_params[:, i]) for i in range(n_params)]
-        ),
-        "R2": np.mean(
-            [
-                get_r_squared(y_test[:, i], pred_params[:, i])
-                for i in range(n_params)
-            ]
-        ),
+        name: {metric_name: [] for metric_name in METRIC_NAMES}
+        for name in param_names
     }
+
+
+def _record_parameter_metrics(history, per_parameter):
+    """Append one fold's named metrics to the per-parameter history."""
+    for name, metric_history in history.items():
+        for metric_name in METRIC_NAMES:
+            metric_history[metric_name].append(
+                per_parameter[name][metric_name]
+            )
+
+
+def _print_parameter_metrics(per_parameter):
+    """Print one fold's metrics in configured parameter order."""
+    print("    Per-parameter metrics:")
+    for name, metrics in per_parameter.items():
+        values = " | ".join(
+            f"{metric_name}={metrics[metric_name]:.6f}"
+            for metric_name in METRIC_NAMES
+        )
+        print(f"      {name}: {values}")
+
+
+def _print_parameter_final_stats(history, held_out_fold):
+    """Print per-parameter values for one fold or statistics across folds."""
+    if held_out_fold is None:
+        n_folds = len(next(iter(history.values()))[METRIC_NAMES[0]])
+        print(f"\n--- PER-PARAMETER CHARACTERIZATION ({n_folds}-Fold Mean) ---")
+        for name, metric_history in history.items():
+            print(f"  {name}:")
+            for metric_name in METRIC_NAMES:
+                values = metric_history[metric_name]
+                print(
+                    f"    {metric_name}: {np.mean(values):.4f}  "
+                    f"(+/- {np.std(values):.4f})"
+                )
+        return
+
+    print(
+        f"\n--- PER-PARAMETER CHARACTERIZATION "
+        f"(Held-out fold {held_out_fold}) ---"
+    )
+    for name, metric_history in history.items():
+        values = " | ".join(
+            f"{metric_name}={metric_history[metric_name][0]:.6f}"
+            for metric_name in METRIC_NAMES
+        )
+        print(f"  {name}: {values}")
 
 
 def run_characterizer_training(
@@ -155,7 +197,12 @@ def run_characterizer_training(
     str
         The experiment directory used.
     """
-    n_params = cfg["data"]["n_params"]
+    data_cfg = cfg["data"]
+    n_params = data_cfg["n_params"]
+    param_names = validate_parameter_names(
+        n_params,
+        data_cfg.get("param_names"),
+    )
     n_pca = cfg["preprocessing"]["pca_components"]
     n_splits = cfg["preprocessing"]["n_splits"]
     char_cfg = cfg["characterizer"]
@@ -171,7 +218,8 @@ def run_characterizer_training(
         save_config(exp_dir, config_path=config_path)
     print(f"Characterizer experiment directory: {exp_dir}")
 
-    history = {"RMSE": [], "RRMSE": [], "MAE": [], "R2": []}
+    history = {metric_name: [] for metric_name in METRIC_NAMES}
+    parameter_history = _initialise_parameter_history(param_names)
     best_r2 = -np.inf
 
     print(
@@ -235,12 +283,18 @@ def run_characterizer_training(
             device,
         )
 
-        metrics = _evaluate_characterizer(
-            model, x_test_pca, y_test, n_params, prep_dir, device
+        evaluation = _evaluate_characterizer(
+            model, x_test_pca, y_test, param_names, prep_dir, device
         )
+        metrics = evaluation["aggregate"]
 
         for key, values in history.items():
             values.append(metrics[key])
+        _record_parameter_metrics(
+            parameter_history,
+            evaluation["per_parameter"],
+        )
+        _print_parameter_metrics(evaluation["per_parameter"])
 
         elapsed = time.time() - start_time
         print(f"Fold {fold_idx} | {elapsed:.0f}s | R2: {metrics['R2']:.4f}")
@@ -268,6 +322,7 @@ def run_characterizer_training(
         )
         for key, values in history.items():
             print(f"  {key}: {values[0]:.4f}")
+    _print_parameter_final_stats(parameter_history, held_out_fold)
     print("=" * 50)
 
     return exp_dir
