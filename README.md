@@ -43,12 +43,23 @@ Run preprocessing, characterizer, and generator training in sequence:
 python main.py --config configs/default_split.yaml
 ```
 
+Preprocessing is written to a new timestamped run directory and that exact
+directory is passed automatically to both training stages. To choose the new
+directory explicitly, add `--prep-out path/to/new-run`; an existing directory
+is rejected.
+
 This is equivalent to running the three stages separately:
 
 ```bash
-python preprocess.py --config configs/default_split.yaml --out preprocessed
-python train_characterizer.py --config configs/default_split.yaml --prep preprocessed
-python train_generator.py --config configs/default_split.yaml --prep preprocessed
+python preprocess.py --config configs/default_split.yaml
+
+# Use the directory printed by preprocessing:
+python train_characterizer.py \
+  --config configs/default_split.yaml \
+  --prep preprocessed/YYYYMMDD_HHMMSS_default_split
+python train_generator.py \
+  --config configs/default_split.yaml \
+  --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
 
 ### Train (unified model)
@@ -205,36 +216,56 @@ remain the primary results.
 
 ### Preprocessing (`preprocess.py`)
 
-Fits scalers and PCA once on the full dataset, then creates K-Fold splits with LSST-augmented training data.
+Fits scalers and PCA once on the full dataset, then creates K-Fold splits with
+LSST-augmented training data. Each invocation creates an isolated run; it does
+not write directly into a shared `preprocessed/` directory.
 
 ```bash
-python preprocess.py --config configs/default_split.yaml --out preprocessed
+python preprocess.py --config configs/default_split.yaml
 ```
+
+The default destination is
+`preprocessed/YYYYMMDD_HHMMSS_config-name/`. Use `--out path/to/new-run` to
+choose an exact destination. In both cases the destination must not already
+exist, preventing previous preprocessing artefacts from being overwritten.
+The command prints the exact path to pass to subsequent `--prep` options.
 
 Output structure:
 
 ```
 preprocessed/
-  x_scaler.pkl, y_scaler.pkl, pca.pkl    # Global artifacts
-  x_raw.npy, y_raw.npy                   # Raw data (log-transformed params)
-  fold_1/
-    x_train_clean_pca.npy                 # Clean training curves (PCA space)
-    x_train_aug_pca.npy                   # LSST-augmented training curves
-    x_test_pca.npy                        # Test curves (PCA space)
-    x_test_clean.npy                      # Test curves (original space)
-    y_train_scaled.npy, y_test_scaled.npy # Scaled parameters
-    y_test.npy                            # Original test parameters
-    train_idx.npy, test_idx.npy           # Fold indices
-  fold_2/
-    ...
+  YYYYMMDD_HHMMSS_config-name/
+    config.yaml                            # Exact configuration snapshot
+    code.zip                               # Python source snapshot
+    metadata.yaml                          # Run, fold and Git metadata
+    x_scaler.pkl, y_scaler.pkl, pca.pkl    # Global artefacts
+    x_raw.npy, y_raw.npy                   # Raw data (log-transformed params)
+    fold_1/
+      x_train_clean_pca.npy                 # Clean training curves (PCA space)
+      x_train_aug_pca.npy                   # LSST-augmented training curves
+      x_test_pca.npy                        # Test curves (PCA space)
+      x_test_clean.npy                      # Test curves (original space)
+      y_train_scaled.npy, y_test_scaled.npy # Scaled parameters
+      y_test.npy                            # Original test parameters
+      train_idx.npy, test_idx.npy           # Fold indices
+    fold_2/
+      ...
 ```
+
+`metadata.yaml` records the artefact schema version, UTC start and completion
+times, run status, configured random seed, fold list, Git commit, branch and
+whether the working tree was dirty. Failed runs remain marked as `failed` and
+are never silently reused. Existing legacy preprocessing directories can still
+be supplied explicitly to the training commands through `--prep`.
 
 ### Characterizer Training (`train_characterizer.py`)
 
 Trains a `SplitMLPRegressor` (one independent MLP per physical parameter) on PCA-compressed curves.
 
 ```bash
-python train_characterizer.py --config configs/default_split.yaml --prep preprocessed
+python train_characterizer.py \
+  --config configs/default_split.yaml \
+  --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
 
 After each evaluated fold, the report includes RMSE, RRMSE, MAE and R2 for
@@ -252,7 +283,9 @@ an additional target transformation.
 Trains a `MLPWithResiduals` to reconstruct PCA-compressed curves from physical parameters.
 
 ```bash
-python train_generator.py --config configs/default_split.yaml --prep preprocessed
+python train_generator.py \
+  --config configs/default_split.yaml \
+  --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
 
 ### Inference on Real Supernovae
