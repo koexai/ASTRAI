@@ -272,6 +272,78 @@ python visualize_reconstruction.py \
 
 Options: `--index N` for a specific sample, `--top N` for the N best by characterization RMSE.
 
+### Semi-analytical Model Curves
+
+`utils.plot_semi_analytical_curves` compares clean curves already stored in a
+configured semi-analytical dataset. It does not run the semi-analytical model
+and does not use PPReg, LCGen or the augmentation pipeline. Relative dataset
+paths are resolved from the repository root, so the command can be run from a
+different working directory as well.
+
+The four-parameter configuration contains an exact one-at-a-time comparison:
+
+```bash
+python -m utils.plot_semi_analytical_curves \
+  --config configs/4par.yaml \
+  --output-dir plots/semi-analytical/4par
+```
+
+The reference values, levels and panel titles are declared under
+`visualisation.one_at_a_time` in `configs/4par.yaml`. Every requested
+combination must match exactly one row; zero or multiple matches produce an
+explicit error.
+
+The seven-parameter configuration produces a 3-by-3 layout with seven populated
+panels, one for each parameter. Each panel contains three summary curves. To
+construct them, the dataset rows are ordered by the parameter shown in that
+panel and split according to the rank intervals configured under
+`visualisation.quantile_summary.quantile_ranges`. The default intervals are the
+lowest 20%, the central 20% (ranks 40--60%) and the highest 20%; the intervening
+20--40% and 60--80% ranges are intentionally omitted.
+
+Each displayed curve is the pointwise median of all clean light curves in its
+group: every timestep is therefore the median luminosity across the selected
+dataset rows. The other six parameters are not held fixed and group membership
+is recomputed independently for every panel. The result is a marginal summary
+of the available dataset, not an exact one-at-a-time comparison, an individual
+semi-analytical model curve or an uncertainty interval. Each legend reports the
+actual parameter range and number of rows contributing to the median:
+
+```bash
+python -m utils.plot_semi_analytical_curves \
+  --config configs/default.yaml \
+  --output-dir plots/semi-analytical/7par
+```
+
+Any configured dataset can also be inspected by selecting one or more existing
+rows. This mode overlays complete sample curves in a single plot:
+
+```bash
+python -m utils.plot_semi_analytical_curves \
+  --config configs/default.yaml \
+  --output-dir plots/semi-analytical/7par-selected \
+  --index 0 \
+  --index 1 \
+  --index 2
+```
+
+Rows may instead be selected by parameter values. A partial selection is
+accepted only when it identifies one unique row:
+
+```bash
+python -m utils.plot_semi_analytical_curves \
+  --config configs/4par.yaml \
+  --output-dir plots/semi-analytical/selected \
+  --parameters 'Radius=13,Mass=20,Energy=4.5,Nichel=0.05'
+```
+
+The current seven-parameter dataset is not a controlled Cartesian grid, so no
+one-at-a-time effect is inferred from nearest neighbours. The quantile summary
+aggregates many samples, while explicit selections compare actual rows and
+print their complete parameter vectors. PDF and PNG are produced by default;
+repeat `--format` to request selected formats, and use `--show` only when an
+interactive window is wanted.
+
 ## Configuration
 
 All hyperparameters are set via YAML config files in `configs/`.

@@ -10,10 +10,10 @@ import joblib
 import yaml
 import torch
 import numpy as np
-import pandas as pd
 
 from models.split_mlp import SplitMLPRegressor
 from models.residual_blocks import MLPWithResiduals
+from utils.data import load_raw_data
 
 
 def load_config(path):
@@ -137,31 +137,8 @@ def load_data(data_path, cfg):
     tuple
         ``(x, y)`` where *y* is ``None`` when labels are absent.
     """
-    data_cfg = cfg["data"]
-    fmt = data_cfg.get("format", "parquet")
-    n_days = data_cfg["n_days"]
-    param_names = data_cfg["param_names"]
-
-    if fmt == "npy_csv":
-        x = np.load(data_cfg["curves_path"]).astype("float32")
-        sep = data_cfg.get("params_csv_sep", ",")
-        params_df = pd.read_csv(data_cfg["params_path"], sep=sep)
-        has_labels = all(p in params_df.columns for p in param_names)
-        y = None
-        if has_labels:
-            y = params_df[param_names].values.astype("float32")
-            y = np.log1p(y)
-    else:
-        curve_cols = [str(i) for i in range(n_days)]
-        path = data_path or data_cfg["path"]
-        df = pd.read_parquet(path)
-        x = df[curve_cols].values.astype("float32")
-        has_labels = all(p in df.columns for p in param_names)
-        y = None
-        if has_labels:
-            y = df[param_names].values.astype("float32")
-            y = np.log1p(y)
-
+    x, y_raw = load_raw_data(data_path, cfg)
+    y = None if y_raw is None else np.log1p(y_raw)
     return x, y
 
 

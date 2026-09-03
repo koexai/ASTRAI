@@ -28,6 +28,26 @@ loss:
 augmentation:
   noise_std: 0.05
 
+visualisation:
+  y_label: '$\log_{10}(L_{\rm bol}\,[{\rm erg}\,{\rm s}^{-1}])$'
+  one_at_a_time:
+    output_name: clean_light_curves_4par
+    reference:
+      Radius: 13.0
+      Mass: 20.0
+      Energy: 4.5
+      Nichel: 0.05
+    levels:
+      Radius: [1.0, 13.0, 25.0]
+      Mass: [10.0, 20.0, 30.0]
+      Energy: [0.5, 4.5, 9.5]
+      Nichel: [0.01, 0.05, 0.10]
+    titles:
+      Radius: 'Progenitor radius $R_\star$ [$10^{12}$ cm]'
+      Mass: 'Ejecta mass $M_{\rm ej}$ [$M_\odot$]'
+      Energy: 'Explosion energy $E_K$ [$10^{51}$ erg]'
+      Nichel: 'Nickel mass $M(^{56}{\rm Ni})$ [$M_\odot$]'
+
 checkpoint:
   model: best_split_mlp_model.pth
   x_scaler: best_split_mlp_x_scaler.pkl
