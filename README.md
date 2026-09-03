@@ -16,6 +16,23 @@ pip install -r requirements.txt
 
 For GPU support, install PyTorch with CUDA following the [official instructions](https://pytorch.org/get-started/locally/).
 
+## Automated Validation
+
+Every pull request and every push to `main` runs the full unit-test suite on
+Python 3.12 and Ubuntu. The workflow compiles the Python sources and runs the
+tests with a headless Matplotlib backend. It does not train models or require
+external datasets or experiment artefacts.
+
+Run the same checks locally from the repository root:
+
+```bash
+python -m compileall -q models scripts utils tests
+
+PYTHONPATH="$PWD:$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+MPLBACKEND=Agg \
+python -m unittest discover -s tests -v
+```
+
 ## Quick Start
 
 ### Train (split pipeline, recommended)
