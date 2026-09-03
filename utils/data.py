@@ -1,10 +1,12 @@
 """Data loading utilities shared by training and analysis entry points."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from utils.parameter_validation import validate_parameter_names
 
 
 SUPPORTED_DATA_FORMATS = {"npy_csv", "parquet"}
@@ -32,24 +34,10 @@ def _data_contract(cfg):
 
     n_days = _positive_int(data_cfg, "n_days")
     n_params = _positive_int(data_cfg, "n_params")
-    param_names = data_cfg.get("param_names")
-
-    if (
-        not isinstance(param_names, Sequence)
-        or isinstance(param_names, (str, bytes))
-        or not param_names
-        or any(not isinstance(name, str) or not name for name in param_names)
-    ):
-        raise ValueError(
-            "data.param_names must be a non-empty sequence of names"
-        )
-    if len(set(param_names)) != len(param_names):
-        raise ValueError("data.param_names must not contain duplicates")
-    if len(param_names) != n_params:
-        raise ValueError(
-            "data.n_params does not match data.param_names: "
-            f"{n_params} != {len(param_names)}"
-        )
+    param_names = validate_parameter_names(
+        n_params,
+        data_cfg.get("param_names"),
+    )
 
     return data_cfg, data_format, n_days, list(param_names)
 
