@@ -220,6 +220,16 @@ Trains a `SplitMLPRegressor` (one independent MLP per physical parameter) on PCA
 python train_characterizer.py --config configs/default_split.yaml --prep preprocessed
 ```
 
+After each evaluated fold, the report includes RMSE, RRMSE, MAE and R2 for
+every entry in `data.param_names` alongside the existing aggregate R2. The
+final report preserves all existing unweighted aggregate metrics and also
+shows the mean and standard deviation of every per-parameter metric across
+folds; a configured `held_out_fold` produces a single-fold report instead.
+
+The per-parameter and aggregate values use the same evaluation-space targets
+after reversing the target standardisation. This reporting does not introduce
+an additional target transformation.
+
 ### Generator Training (`train_generator.py`)
 
 Trains a `MLPWithResiduals` to reconstruct PCA-compressed curves from physical parameters.
@@ -394,7 +404,9 @@ experiments/
 ## Metrics
 
 Evaluation reports R2, RMSE, RRMSE, and MAE:
-- **Characterization**: per-parameter metrics averaged across physical quantities, with bootstrap confidence intervals.
+- **Characterization**: named per-parameter metrics and their unweighted
+  aggregate. Characterizer training reports fold and cross-fold values;
+  inference reports bootstrap confidence intervals.
 - **Generation**: flattened across all time-steps and samples.
 
 ## Support
