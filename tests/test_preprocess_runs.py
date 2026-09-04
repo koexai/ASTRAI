@@ -88,8 +88,9 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                     config_path=config_path,
                 )
 
-            self.assertEqual(result, str(run_dir))
-            self.assertIn(f"--prep {run_dir}", output.getvalue())
+            resolved_run_dir = run_dir.resolve()
+            self.assertEqual(result, str(resolved_run_dir))
+            self.assertIn(f"--prep {resolved_run_dir}", output.getvalue())
             self.assertEqual(
                 (run_dir / "config.yaml").read_text(encoding="utf-8"),
                 config_contents,
