@@ -23,6 +23,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from train import print_final_stats
 from models.split_mlp import SplitMLPRegressor
+from utils.array_dtypes import load_model_array
 from utils.metrics import (
     METRIC_NAMES,
     compute_parameter_metrics,
@@ -47,11 +48,17 @@ def _load_fold_data(fold_dir):
     - x_test_pca: (n_test, n_pca)
     - y_train_scaled: (n_train, n_params)
     - y_test: (n_test, n_params)"""
-    x_train_clean_pca = np.load(os.path.join(fold_dir, "x_train_clean_pca.npy"))
-    x_train_aug_pca = np.load(os.path.join(fold_dir, "x_train_aug_pca.npy"))
-    x_test_pca = np.load(os.path.join(fold_dir, "x_test_pca.npy"))
-    y_train_scaled = np.load(os.path.join(fold_dir, "y_train_scaled.npy"))
-    y_test = np.load(os.path.join(fold_dir, "y_test.npy"))
+    x_train_clean_pca = load_model_array(
+        os.path.join(fold_dir, "x_train_clean_pca.npy")
+    )
+    x_train_aug_pca = load_model_array(
+        os.path.join(fold_dir, "x_train_aug_pca.npy")
+    )
+    x_test_pca = load_model_array(os.path.join(fold_dir, "x_test_pca.npy"))
+    y_train_scaled = load_model_array(
+        os.path.join(fold_dir, "y_train_scaled.npy")
+    )
+    y_test = load_model_array(os.path.join(fold_dir, "y_test.npy"))
     return (
         x_train_clean_pca,
         x_train_aug_pca,

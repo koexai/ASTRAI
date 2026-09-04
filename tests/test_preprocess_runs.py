@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import yaml
 
 from scripts import preprocess
@@ -87,21 +88,22 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                     config_path=config_path,
                 )
 
-            self.assertEqual(result, str(run_dir))
-            self.assertIn(f"--prep {run_dir}", output.getvalue())
+            resolved_run_dir = run_dir.resolve()
+            self.assertEqual(result, str(resolved_run_dir))
+            self.assertIn(f"--prep {resolved_run_dir}", output.getvalue())
             self.assertEqual(
                 (run_dir / "config.yaml").read_text(encoding="utf-8"),
                 config_contents,
             )
             self.assertTrue((run_dir / "code.zip").is_file())
-            generate.assert_called_once_with(self.cfg, run_dir)
+            generate.assert_called_once_with(self.cfg, resolved_run_dir)
 
             metadata = yaml.safe_load(
                 (run_dir / "metadata.yaml").read_text(encoding="utf-8")
             )
             self.assertEqual(
                 metadata["preprocessing_artefact_schema_version"],
-                1,
+                2,
             )
             self.assertEqual(metadata["run"]["status"], "completed")
             self.assertIsNotNone(metadata["run"]["completed_at_utc"])
@@ -114,6 +116,14 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                     "folds": [1, 2],
                 },
             )
+            self.assertEqual(
+                metadata["array_dtypes"],
+                {
+                    "model": "float32",
+                    "indices": "int64",
+                },
+            )
+            self.assertEqual(metadata["array_artefacts"], {})
             self.assertEqual(
                 metadata["git"],
                 {
@@ -196,6 +206,119 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                 "working_tree_dirty": True,
             },
         )
+
+    def test_completed_run_records_array_dtypes_and_shapes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "run"
+
+            def generate_artefacts(_cfg, destination):
+                fold_dir = Path(destination) / "fold_1"
+                fold_dir.mkdir()
+                np.save(
+                    Path(destination) / "x_raw.npy",
+                    np.ones((3, 4), dtype=np.float32),
+                )
+                np.save(
+                    fold_dir / "train_idx.npy",
+                    np.array([0, 2], dtype=np.int64),
+                )
+
+            with (
+                patch.object(preprocess, "_REPOSITORY_ROOT", root),
+                patch.object(
+                    preprocess,
+                    "save_code",
+                    side_effect=self._write_code_archive,
+                ),
+                patch.object(
+                    preprocess,
+                    "_generate_preprocessing_artefacts",
+                    side_effect=generate_artefacts,
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                preprocess.run_preprocessing(self.cfg, out_dir=run_dir)
+
+            metadata = yaml.safe_load(
+                (run_dir / "metadata.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                metadata["array_artefacts"],
+                {
+                    "fold_1/train_idx.npy": {
+                        "dtype": "int64",
+                        "shape": [2],
+                    },
+                    "x_raw.npy": {
+                        "dtype": "float32",
+                        "shape": [3, 4],
+                    },
+                },
+            )
+
+
+class PreprocessingArrayDtypeTests(unittest.TestCase):
+    class IdentityTransformer:
+        @staticmethod
+        def transform(values):
+            return np.asarray(values)
+
+    def test_process_fold_persists_model_and_index_contracts(self):
+        x_raw = np.arange(20, dtype=np.float32).reshape(5, 4)
+        y_raw = np.arange(10, dtype=np.float32).reshape(5, 2)
+        train_idx = np.array([0, 1, 2], dtype=np.int32)
+        test_idx = np.array([3, 4], dtype=np.int32)
+        augmented = x_raw[train_idx].astype(np.float64) + 0.125
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(
+                preprocess,
+                "apply_lsst_pipeline",
+                return_value=(augmented, np.ones_like(augmented, dtype=bool)),
+            ):
+                preprocess._process_fold(
+                    fold_idx=1,
+                    x_raw=x_raw,
+                    y_raw=y_raw,
+                    train_idx=train_idx,
+                    test_idx=test_idx,
+                    x_scaler=self.IdentityTransformer(),
+                    y_scaler=self.IdentityTransformer(),
+                    pca=self.IdentityTransformer(),
+                    n_days=4,
+                    noise_std=0.05,
+                    samples_per_day=1,
+                    out_dir=temp_dir,
+                )
+
+            fold_dir = Path(temp_dir) / "fold_1"
+            model_names = (
+                "x_train_clean_pca.npy",
+                "x_train_aug_pca.npy",
+                "x_test_pca.npy",
+                "y_train_scaled.npy",
+                "y_test_scaled.npy",
+                "y_test.npy",
+                "x_test_clean.npy",
+            )
+            for name in model_names:
+                with self.subTest(name=name):
+                    self.assertEqual(
+                        np.load(fold_dir / name).dtype,
+                        np.dtype(np.float32),
+                    )
+            for name in ("train_idx.npy", "test_idx.npy"):
+                with self.subTest(name=name):
+                    self.assertEqual(
+                        np.load(fold_dir / name).dtype,
+                        np.dtype(np.int64),
+                    )
+
+            np.testing.assert_array_equal(
+                np.load(fold_dir / "x_train_aug_pca.npy"),
+                augmented.astype(np.float32),
+            )
 
 
 if __name__ == "__main__":

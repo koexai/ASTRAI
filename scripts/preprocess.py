@@ -27,6 +27,12 @@ from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 
 from utils.augmentation import apply_lsst_pipeline
+from utils.array_dtypes import (
+    INDEX_ARRAY_DTYPE,
+    MODEL_ARRAY_DTYPE,
+    as_index_array,
+    as_model_array,
+)
 from utils.checkpoints import load_data
 from utils.log_experiments import save_code
 
@@ -35,7 +41,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNS_DIR = _REPOSITORY_ROOT / "preprocessed"
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _METADATA_NAME = "metadata.yaml"
-_ARTEFACT_SCHEMA_VERSION = 1
+_ARTEFACT_SCHEMA_VERSION = 2
 
 
 def _utc_now():
@@ -129,6 +135,30 @@ def _write_metadata(run_dir, metadata):
         yaml.safe_dump(metadata, stream, sort_keys=False)
 
 
+def _array_artefact_metadata(run_dir):
+    """Describe every persisted NumPy array without loading it into memory."""
+    run_dir = Path(run_dir)
+    artefacts = {}
+    for path in sorted(run_dir.rglob("*.npy")):
+        array = np.load(path, mmap_mode="r", allow_pickle=False)
+        artefacts[path.relative_to(run_dir).as_posix()] = {
+            "dtype": array.dtype.name,
+            "shape": [int(size) for size in array.shape],
+        }
+        del array
+    return artefacts
+
+
+def _save_model_array(path, values):
+    """Persist model-ready values using the shared ``float32`` contract."""
+    np.save(path, as_model_array(values))
+
+
+def _save_index_array(path, values):
+    """Persist fold indices using the shared ``int64`` contract."""
+    np.save(path, as_index_array(values))
+
+
 def _save_config_snapshot(run_dir, cfg, config_path=None):
     """Save the exact source config, or serialise a programmatic config."""
     destination = Path(run_dir) / _CONFIG_SNAPSHOT_NAME
@@ -159,6 +189,11 @@ def _initial_metadata(cfg, started_at, repository_root):
             "n_splits": n_splits,
             "folds": list(range(1, n_splits + 1)),
         },
+        "array_dtypes": {
+            "model": MODEL_ARRAY_DTYPE.name,
+            "indices": INDEX_ARRAY_DTYPE.name,
+        },
+        "array_artefacts": {},
         "git": _git_metadata(repository_root),
     }
 
@@ -249,8 +284,8 @@ def _process_fold(
     y_train = y_raw[train_idx]
     y_test = y_raw[test_idx]
 
-    np.save(os.path.join(fold_dir, "train_idx.npy"), train_idx)
-    np.save(os.path.join(fold_dir, "test_idx.npy"), test_idx)
+    _save_index_array(os.path.join(fold_dir, "train_idx.npy"), train_idx)
+    _save_index_array(os.path.join(fold_dir, "test_idx.npy"), test_idx)
 
     print("  Applying LSST augmentation...")
     x_train_aug, _ = apply_lsst_pipeline(
@@ -267,13 +302,17 @@ def _process_fold(
     y_train_scaled = y_scaler.transform(y_train)
     y_test_scaled = y_scaler.transform(y_test)
 
-    np.save(os.path.join(fold_dir, "x_train_clean_pca.npy"), x_train_clean_pca)
-    np.save(os.path.join(fold_dir, "x_train_aug_pca.npy"), x_train_aug_pca)
-    np.save(os.path.join(fold_dir, "x_test_pca.npy"), x_test_pca)
-    np.save(os.path.join(fold_dir, "y_train_scaled.npy"), y_train_scaled)
-    np.save(os.path.join(fold_dir, "y_test_scaled.npy"), y_test_scaled)
-    np.save(os.path.join(fold_dir, "y_test.npy"), y_test)
-    np.save(os.path.join(fold_dir, "x_test_clean.npy"), x_test_clean)
+    model_arrays = {
+        "x_train_clean_pca.npy": x_train_clean_pca,
+        "x_train_aug_pca.npy": x_train_aug_pca,
+        "x_test_pca.npy": x_test_pca,
+        "y_train_scaled.npy": y_train_scaled,
+        "y_test_scaled.npy": y_test_scaled,
+        "y_test.npy": y_test,
+        "x_test_clean.npy": x_test_clean,
+    }
+    for filename, values in model_arrays.items():
+        _save_model_array(os.path.join(fold_dir, filename), values)
 
     print(f"  Saved to {fold_dir}")
 
@@ -295,8 +334,8 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
         x_raw, y_raw, n_pca, out_dir
     )
 
-    np.save(os.path.join(out_dir, "x_raw.npy"), x_raw)
-    np.save(os.path.join(out_dir, "y_raw.npy"), y_raw)
+    _save_model_array(os.path.join(out_dir, "x_raw.npy"), x_raw)
+    _save_model_array(os.path.join(out_dir, "y_raw.npy"), y_raw)
 
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
@@ -349,6 +388,7 @@ def run_preprocessing(cfg, out_dir=None, config_path=None):
         _save_config_snapshot(run_dir, cfg, config_path=config_path)
         save_code(run_dir, folder=_REPOSITORY_ROOT)
         _generate_preprocessing_artefacts(cfg, run_dir)
+        array_artefacts = _array_artefact_metadata(run_dir)
     except Exception as exc:
         metadata["run"].update(
             {
@@ -367,6 +407,7 @@ def run_preprocessing(cfg, out_dir=None, config_path=None):
             "completed_at_utc": _utc_now().isoformat(),
         }
     )
+    metadata["array_artefacts"] = array_artefacts
     _write_metadata(run_dir, metadata)
 
     run_path = str(run_dir)

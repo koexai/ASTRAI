@@ -23,6 +23,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from train import print_final_stats
 from models.split_mlp import MLPWithResiduals
+from utils.array_dtypes import load_model_array
 from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from utils.checkpoints import copy_preprocessing_artifacts
 from utils.fold_selection import resolve_fold_indices
@@ -44,11 +45,21 @@ def _load_fold_data(fold_dir):
     - y_test_scaled: (n_test, n_curves)
     - x_test_clean: (n_test, n_params)
     """
-    x_train_clean_pca = np.load(os.path.join(fold_dir, "x_train_clean_pca.npy"))
-    x_train_aug_pca = np.load(os.path.join(fold_dir, "x_train_aug_pca.npy"))
-    y_train_scaled = np.load(os.path.join(fold_dir, "y_train_scaled.npy"))
-    y_test_scaled = np.load(os.path.join(fold_dir, "y_test_scaled.npy"))
-    x_test_clean = np.load(os.path.join(fold_dir, "x_test_clean.npy"))
+    x_train_clean_pca = load_model_array(
+        os.path.join(fold_dir, "x_train_clean_pca.npy")
+    )
+    x_train_aug_pca = load_model_array(
+        os.path.join(fold_dir, "x_train_aug_pca.npy")
+    )
+    y_train_scaled = load_model_array(
+        os.path.join(fold_dir, "y_train_scaled.npy")
+    )
+    y_test_scaled = load_model_array(
+        os.path.join(fold_dir, "y_test_scaled.npy")
+    )
+    x_test_clean = load_model_array(
+        os.path.join(fold_dir, "x_test_clean.npy")
+    )
     return (
         x_train_clean_pca,
         x_train_aug_pca,

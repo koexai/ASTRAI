@@ -22,6 +22,7 @@ import numpy as np
 import torch
 
 from utils.augmentation import apply_lsst_pipeline
+from utils.array_dtypes import load_model_array
 from utils.checkpoints import load_config, load_characterizer, load_generator
 
 
@@ -810,9 +811,9 @@ def main():
             f"  - {missing_list}"
         )
 
-    x_test_clean = np.load(required_artifacts["x_test_clean"])
-    y_test = np.load(required_artifacts["y_test"])
-    y_test_scaled = np.load(required_artifacts["y_test_scaled"])
+    x_test_clean = load_model_array(required_artifacts["x_test_clean"])
+    y_test = load_model_array(required_artifacts["y_test"])
+    y_test_scaled = load_model_array(required_artifacts["y_test_scaled"])
 
     if x_test_clean.ndim != 2 or x_test_clean.shape[1] != n_days:
         raise ValueError(
