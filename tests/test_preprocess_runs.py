@@ -96,7 +96,7 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                 config_contents,
             )
             self.assertTrue((run_dir / "code.zip").is_file())
-            generate.assert_called_once_with(self.cfg, run_dir)
+            generate.assert_called_once_with(self.cfg, resolved_run_dir)
 
             metadata = yaml.safe_load(
                 (run_dir / "metadata.yaml").read_text(encoding="utf-8")
