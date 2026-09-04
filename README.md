@@ -254,9 +254,16 @@ preprocessed/
 
 `metadata.yaml` records the artefact schema version, UTC start and completion
 times, run status, configured random seed, fold list, Git commit, branch and
-whether the working tree was dirty. Failed runs remain marked as `failed` and
-are never silently reused. Existing legacy preprocessing directories can still
-be supplied explicitly to the training commands through `--prep`.
+whether the working tree was dirty. It also records the dtype and shape of
+every NumPy artefact produced by a completed run.
+
+Persisted model arrays use `float32`, while fold indices use `int64`. The cast
+is applied after augmentation, scaling and PCA, so it does not change those
+intermediate calculations; it makes the saved representation match the
+`float32` tensors already used by PyTorch. Existing preprocessing directories
+containing legacy `float64` model arrays remain supported: training and
+diagnostic loaders normalise them to `float32` in memory. Failed runs remain
+marked as `failed` and are never silently reused.
 
 ### Characterizer Training (`train_characterizer.py`)
 
