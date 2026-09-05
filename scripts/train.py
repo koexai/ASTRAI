@@ -34,6 +34,14 @@ from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from utils.checkpoints import load_config, load_data, save_model_checkpoint
 from utils.augmentation import apply_lsst_pipeline
 from utils.log_experiments import create_experiment_dir, save_code, save_config
+from utils.reproducibility import (
+    build_training_seed_plan,
+    build_unified_preprocessing_seed_plan,
+    configure_torch_determinism,
+    make_numpy_rng,
+    make_torch_generator,
+    seed_data_loader_worker,
+)
 
 
 def print_final_stats(name, history):
@@ -61,6 +69,8 @@ def _preprocess_fold(
     n_days,
     samples_per_day,
     fold_idx,
+    augmentation_seed,
+    pca_seed,
 ):
     """Augment, scale, and PCA-transform a single fold's data.
     Parameters
@@ -83,6 +93,10 @@ def _preprocess_fold(
         Number of augmented samples to generate per clean curve.
     fold_idx : int
         Index of the current fold (for logging purposes).
+    augmentation_seed : int
+        Seed for the fold-local augmentation stream.
+    pca_seed : int
+        Seed passed to the fold-local PCA.
     Returns
     -------
     x_train_combined : np.ndarray
@@ -108,6 +122,7 @@ def _preprocess_fold(
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
+        rng=make_numpy_rng(augmentation_seed),
     )
 
     x_scaler = StandardScaler()
@@ -120,7 +135,7 @@ def _preprocess_fold(
     y_train_scaled = y_scaler.fit_transform(y_train)
     y_test_scaled = y_scaler.transform(y_test)
 
-    pca = PCA(n_components=n_pca)
+    pca = PCA(n_components=n_pca, random_state=pca_seed)
     pca.fit(x_train_clean_scaled)
     expl_var = pca.explained_variance_ratio_.sum()
     print(
@@ -275,6 +290,23 @@ def main():
     for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x_raw), 1):
         start_time = time.time()
 
+        preprocessing_seed_plan = build_unified_preprocessing_seed_plan(
+            train_cfg["random_seed"],
+            fold_idx,
+        )
+        training_seed_plan = build_training_seed_plan(
+            train_cfg["random_seed"],
+            "unified",
+            fold_idx,
+        )
+        print(
+            f"    [Fold {fold_idx}] Reproducibility seeds: "
+            f"augmentation={preprocessing_seed_plan['augmentation']}, "
+            f"pca={preprocessing_seed_plan['pca']}, "
+            f"model={training_seed_plan['model']}, "
+            f"data_loader={training_seed_plan['data_loader']}"
+        )
+
         x_train_clean, x_test_clean = x_raw[train_idx], x_raw[test_idx]
         y_train, y_test = y_raw[train_idx], y_raw[test_idx]
 
@@ -296,14 +328,22 @@ def main():
             n_days,
             samples_per_day,
             fold_idx,
+            preprocessing_seed_plan["augmentation"],
+            preprocessing_seed_plan["pca"],
         )
+
+        configure_torch_determinism(training_seed_plan["model"])
 
         train_ds = TensorDataset(
             torch.FloatTensor(x_train_combined),
             torch.FloatTensor(y_train_combined),
         )
         train_loader = DataLoader(
-            train_ds, batch_size=train_cfg["batch_size"], shuffle=True
+            train_ds,
+            batch_size=train_cfg["batch_size"],
+            shuffle=True,
+            generator=make_torch_generator(training_seed_plan["data_loader"]),
+            worker_init_fn=seed_data_loader_worker,
         )
 
         regressor = SplitMLPRegressor(

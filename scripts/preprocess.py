@@ -35,13 +35,17 @@ from utils.array_dtypes import (
 )
 from utils.checkpoints import load_data
 from utils.log_experiments import save_code
+from utils.reproducibility import (
+    build_preprocessing_seed_plan,
+    make_numpy_rng,
+)
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNS_DIR = _REPOSITORY_ROOT / "preprocessed"
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _METADATA_NAME = "metadata.yaml"
-_ARTEFACT_SCHEMA_VERSION = 2
+_ARTEFACT_SCHEMA_VERSION = 3
 
 
 def _utc_now():
@@ -174,6 +178,10 @@ def _initial_metadata(cfg, started_at, repository_root):
     """Build the initial metadata record for a preprocessing run."""
     preprocessing_cfg = cfg["preprocessing"]
     n_splits = preprocessing_cfg["n_splits"]
+    seed_plan = build_preprocessing_seed_plan(
+        preprocessing_cfg["random_seed"],
+        n_splits,
+    )
     return {
         "preprocessing_artefact_schema_version": _ARTEFACT_SCHEMA_VERSION,
         "run": {
@@ -188,6 +196,7 @@ def _initial_metadata(cfg, started_at, repository_root):
             "random_seed": preprocessing_cfg["random_seed"],
             "n_splits": n_splits,
             "folds": list(range(1, n_splits + 1)),
+            "seed_plan": seed_plan,
         },
         "array_dtypes": {
             "model": MODEL_ARRAY_DTYPE.name,
@@ -198,7 +207,13 @@ def _initial_metadata(cfg, started_at, repository_root):
     }
 
 
-def _fit_global_artifacts(x_raw, y_raw, n_pca, out_dir):
+def _fit_global_artifacts(
+    x_raw,
+    y_raw,
+    n_pca,
+    out_dir,
+    random_state,
+):
     """Fit scalers and PCA on full dataset and save to out_dir.
 
     Parameters
@@ -211,6 +226,8 @@ def _fit_global_artifacts(x_raw, y_raw, n_pca, out_dir):
         Number of PCA components to keep.
     out_dir : str
         Output directory to save fitted artifacts.
+    random_state : int
+        Explicit PCA seed.
     """
     print("Fitting scalers and PCA on full dataset...")
     x_scaler = StandardScaler()
@@ -219,7 +236,7 @@ def _fit_global_artifacts(x_raw, y_raw, n_pca, out_dir):
     y_scaler = StandardScaler()
     y_scaler.fit(y_raw)
 
-    pca = PCA(n_components=n_pca)
+    pca = PCA(n_components=n_pca, random_state=random_state)
     pca.fit(x_scaler.transform(x_raw))
     explained_var = pca.explained_variance_ratio_.sum()
     print(
@@ -246,6 +263,7 @@ def _process_fold(
     noise_std,
     samples_per_day,
     out_dir,
+    augmentation_seed,
 ):
     """Augment, transform, and save a single fold's data.
 
@@ -275,6 +293,8 @@ def _process_fold(
         Number of augmented samples to generate per day.
         out_dir : str
         Base output directory for this fold's artifacts.
+    augmentation_seed : int
+        Seed for this fold's independent augmentation stream.
     """
     fold_dir = os.path.join(out_dir, f"fold_{fold_idx}")
     os.makedirs(fold_dir, exist_ok=True)
@@ -293,6 +313,7 @@ def _process_fold(
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
+        rng=make_numpy_rng(augmentation_seed),
     )
 
     x_train_clean_pca = pca.transform(x_scaler.transform(x_train_clean))
@@ -324,20 +345,31 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
     noise_std = cfg["augmentation"]["noise_std"]
     n_pca = cfg["preprocessing"]["pca_components"]
     n_splits = cfg["preprocessing"]["n_splits"]
-    seed = cfg["preprocessing"]["random_seed"]
+    seed_plan = build_preprocessing_seed_plan(
+        cfg["preprocessing"]["random_seed"],
+        n_splits,
+    )
 
     print("Loading data...")
     x_raw, y_raw = load_data(None, cfg)
     y_raw = np.log1p(y_raw)
 
     x_scaler, y_scaler, pca = _fit_global_artifacts(
-        x_raw, y_raw, n_pca, out_dir
+        x_raw,
+        y_raw,
+        n_pca,
+        out_dir,
+        random_state=seed_plan["pca"],
     )
 
     _save_model_array(os.path.join(out_dir, "x_raw.npy"), x_raw)
     _save_model_array(os.path.join(out_dir, "y_raw.npy"), y_raw)
 
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    kf = KFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=seed_plan["k_fold"],
+    )
 
     for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x_raw), 1):
         print(f"\n--- Fold {fold_idx}/{n_splits} ---")
@@ -354,6 +386,7 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
             noise_std,
             samples_per_day,
             out_dir,
+            seed_plan["augmentation"][f"fold_{fold_idx}"],
         )
 
 

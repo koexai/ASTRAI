@@ -854,13 +854,12 @@ def main():
 
     # --- Plot 1: LC Reconstruction ---
     print("\nApplying one shared LSST augmentation to the test set...")
-    np.random.seed(args.lsst_seed)
-
     x_test_aug, x_test_retained_mask = apply_lsst_pipeline(
         x_test_clean,
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
+        rng=np.random.default_rng(args.lsst_seed),
     )
 
     selected_samples = select_diagnostic_samples(
