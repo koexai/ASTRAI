@@ -103,7 +103,7 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["preprocessing_artefact_schema_version"],
-                2,
+                3,
             )
             self.assertEqual(metadata["run"]["status"], "completed")
             self.assertIsNotNone(metadata["run"]["completed_at_utc"])
@@ -114,6 +114,16 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                     "random_seed": 42,
                     "n_splits": 2,
                     "folds": [1, 2],
+                    "seed_plan": {
+                        "scheme_version": 1,
+                        "base_seed": 42,
+                        "k_fold": 42,
+                        "pca": 3329053876,
+                        "augmentation": {
+                            "fold_1": 1385871029,
+                            "fold_2": 1939820029,
+                        },
+                    },
                 },
             )
             self.assertEqual(
@@ -290,6 +300,7 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
                     noise_std=0.05,
                     samples_per_day=1,
                     out_dir=temp_dir,
+                    augmentation_seed=123,
                 )
 
             fold_dir = Path(temp_dir) / "fold_1"
