@@ -1,7 +1,8 @@
 """Deterministic random-number handling for ASTRAI workflows.
 
-The project uses one configured base seed and derives independent seeds for
-each stochastic stage.  Stable numeric namespaces keep a fold reproducible
+The project uses one base seed configured in YAML and derives independent seeds
+for each stochastic stage. The derived seeds are internal and must not be
+configured individually. Stable numeric namespaces keep a fold reproducible
 regardless of which other folds or training stages run before it.
 """
 import os

@@ -13,6 +13,7 @@ training:
   epochs: 1000
   learning_rate: 0.001
   n_splits: 2
+  # Single base seed; stage-specific and fold-specific seeds are derived.
   random_seed: 42
 
 model:

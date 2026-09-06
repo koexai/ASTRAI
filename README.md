@@ -275,6 +275,12 @@ each fold's augmentation, model initialisation and DataLoader shuffling. The
 K-fold splitter continues to use the configured base seed directly, preserving
 the configured fold assignment.
 
+To select a different set of random streams, change only `random_seed` in the
+configuration file: `preprocessing.random_seed` for the split pipeline or
+`training.random_seed` for the unified model. The value must be an integer from
+0 to 4294967295. All stage-specific and fold-specific seeds are derived
+automatically and should not be configured individually.
+
 Preprocessing and diagnostic augmentation use explicit local NumPy generators
 and do not depend on NumPy's process-global random state. Consequently, two
 preprocessing runs with the same code, configuration and data produce identical

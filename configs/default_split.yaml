@@ -12,6 +12,7 @@ data:
 preprocessing:
   pca_components: 32
   n_splits: 2
+  # Single base seed; stage-specific and fold-specific seeds are derived.
   random_seed: 42
 
 augmentation:
