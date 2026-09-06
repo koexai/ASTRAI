@@ -1,5 +1,5 @@
 """
-Module for loading and saving model checkpoints and preprocessing artifacts.
+Module for loading and saving model checkpoints and preprocessing artefacts.
 Provides functions to load characterizer and generator models along with their
 associated scalers and PCA, as well as saving checkpoints after training.
 """
@@ -17,7 +17,7 @@ from models.residual_blocks import MLPWithResiduals
 from utils.data import load_raw_data
 
 
-def experiment_artifact_path(exp_dir, configured_path):
+def experiment_artefact_path(exp_dir, configured_path):
     """Resolve a configured artefact name inside one experiment directory.
 
     Historical configurations may contain a complete experiment path. Only
@@ -32,10 +32,10 @@ def experiment_artifact_path(exp_dir, configured_path):
     return Path(exp_dir) / filename
 
 
-def checkpoint_artifact_paths(exp_dir, cfg_checkpoint):
+def checkpoint_artefact_paths(exp_dir, cfg_checkpoint):
     """Return all configured checkpoint artefacts keyed by their role."""
     return {
-        role: experiment_artifact_path(exp_dir, configured_path)
+        role: experiment_artefact_path(exp_dir, configured_path)
         for role, configured_path in cfg_checkpoint.items()
         if role in {"model", "x_scaler", "y_scaler", "pca"}
     }
@@ -56,14 +56,18 @@ def _load_scalers_and_pca(ckpt, exp_dir):
     y_scaler: the loaded StandardScaler for target parameters
     pca: the loaded PCA transformer
     """
-    x_scaler = joblib.load(experiment_artifact_path(exp_dir, ckpt["x_scaler"]))
-    y_scaler = joblib.load(experiment_artifact_path(exp_dir, ckpt["y_scaler"]))
-    pca = joblib.load(experiment_artifact_path(exp_dir, ckpt["pca"]))
+    x_scaler = joblib.load(
+        experiment_artefact_path(exp_dir, ckpt["x_scaler"])
+    )
+    y_scaler = joblib.load(
+        experiment_artefact_path(exp_dir, ckpt["y_scaler"])
+    )
+    pca = joblib.load(experiment_artefact_path(exp_dir, ckpt["pca"]))
     return x_scaler, y_scaler, pca
 
 
 def load_characterizer(cfg, device, exp_dir):
-    """Load characterizer model and preprocessing artifacts from an experiment directory.
+    """Load characterizer model and preprocessing artefacts from an experiment directory.
     cfg: config dict to determine model architecture and checkpoint names
     device: torch.device to load the model onto
     exp_dir: path to the experiment directory containing checkpoints
@@ -88,7 +92,7 @@ def load_characterizer(cfg, device, exp_dir):
     ckpt = char_cfg["checkpoint"]
     model.load_state_dict(
         torch.load(
-            experiment_artifact_path(exp_dir, ckpt["model"]),
+            experiment_artefact_path(exp_dir, ckpt["model"]),
             map_location=device,
             weights_only=True,
         )
@@ -100,10 +104,10 @@ def load_characterizer(cfg, device, exp_dir):
 
 
 def load_generator(cfg, device, exp_dir):
-    """Load generator model and preprocessing artifacts from an experiment directory.
+    """Load generator model and preprocessing artefacts from an experiment directory.
     cfg: config dict to determine model architecture and checkpoint names
     device: torch.device to load the model onto
-    exp_dir: path to the experiment directory containing checkpoints and preprocessing artifacts
+    exp_dir: path to the experiment directory containing checkpoints and preprocessing artefacts
     Returns:
     model: the loaded generator model
     x_scaler: the loaded StandardScaler for input curves
@@ -125,7 +129,7 @@ def load_generator(cfg, device, exp_dir):
     ckpt = gen_cfg["checkpoint"]
     model.load_state_dict(
         torch.load(
-            experiment_artifact_path(exp_dir, ckpt["model"]),
+            experiment_artefact_path(exp_dir, ckpt["model"]),
             map_location=device,
             weights_only=True,
         )
@@ -170,7 +174,7 @@ def load_data(data_path, cfg):
 def save_model_checkpoint(
     exp_dir, cfg_checkpoint, model, x_scaler, y_scaler, pca
 ):
-    """Save model state dict and preprocessing artifacts to disk.
+    """Save model state dict and preprocessing artefacts to disk.
 
     Parameters
     ----------
@@ -189,19 +193,19 @@ def save_model_checkpoint(
     """
     torch.save(
         model.state_dict(),
-        experiment_artifact_path(exp_dir, cfg_checkpoint["model"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["model"]),
     )
     joblib.dump(
         x_scaler,
-        experiment_artifact_path(exp_dir, cfg_checkpoint["x_scaler"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["x_scaler"]),
     )
     joblib.dump(
         y_scaler,
-        experiment_artifact_path(exp_dir, cfg_checkpoint["y_scaler"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["y_scaler"]),
     )
     joblib.dump(
         pca,
-        experiment_artifact_path(exp_dir, cfg_checkpoint["pca"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["pca"]),
     )
 
 
@@ -213,19 +217,19 @@ def copy_preprocessing_artifacts(prep_dir, exp_dir, cfg_checkpoint):
     prep_dir : str
         Preprocessing directory containing saved scalers and PCA.
     exp_dir : str
-        Experiment directory where artifacts are copied.
+        Experiment directory where artefacts are copied.
     cfg_checkpoint : dict
         Configuration dict with keys "x_scaler", "y_scaler", "pca".
     """
     shutil.copy2(
         os.path.join(prep_dir, "x_scaler.pkl"),
-        experiment_artifact_path(exp_dir, cfg_checkpoint["x_scaler"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["x_scaler"]),
     )
     shutil.copy2(
         os.path.join(prep_dir, "y_scaler.pkl"),
-        experiment_artifact_path(exp_dir, cfg_checkpoint["y_scaler"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["y_scaler"]),
     )
     shutil.copy2(
         os.path.join(prep_dir, "pca.pkl"),
-        experiment_artifact_path(exp_dir, cfg_checkpoint["pca"]),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["pca"]),
     )

@@ -10,6 +10,7 @@ import yaml
 from utils.log_experiments import (
     ExperimentRun,
     create_experiment_dir,
+    create_pipeline_run_id,
     save_code,
 )
 
@@ -77,6 +78,15 @@ class ExperimentDirectoryTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertTrue(second.endswith("_01"))
 
+    def test_pipeline_identifiers_remain_unique_at_the_same_instant(self):
+        instant = datetime(2026, 9, 6, 10, 30, tzinfo=timezone.utc)
+
+        first = create_pipeline_run_id(now=instant)
+        second = create_pipeline_run_id(now=instant)
+
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("pipeline_20260906_103000_000000_"))
+
 
 class ExperimentRunTests(unittest.TestCase):
     @staticmethod
@@ -122,6 +132,7 @@ class ExperimentRunTests(unittest.TestCase):
                 folds=[1],
                 base_seed=42,
                 device="cpu",
+                pipeline_run_id="pipeline-123",
                 repository_root=source_root,
             )
             checkpoint = run_dir / "model.pth"
@@ -136,12 +147,25 @@ class ExperimentRunTests(unittest.TestCase):
             run.complete({"aggregate": {"R2": {"mean": 0.75}}})
 
             metadata = self._metadata(run_dir)
+            config_snapshot = yaml.safe_load(
+                (run_dir / "config.yaml").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(metadata["experiment_metadata_version"], 1)
         self.assertEqual(metadata["run"]["status"], "completed")
         self.assertEqual(metadata["run"]["stage"], "characterizer")
+        self.assertEqual(metadata["run"]["pipeline_run_id"], "pipeline-123")
         self.assertEqual(metadata["config"]["snapshot"], "config.yaml")
         self.assertEqual(metadata["source"]["snapshot"], "code.zip")
+        self.assertEqual(
+            config_snapshot,
+            {
+                "data": {
+                    "n_params": 2,
+                    "param_names": ["Mass", "Energy"],
+                }
+            },
+        )
         self.assertEqual(
             metadata["preprocessing"]["artefact_schema_version"], 3
         )
@@ -190,6 +214,34 @@ class ExperimentRunTests(unittest.TestCase):
                     exp_dir=run_dir,
                     repository_root=self._source_root(root),
                 )
+
+    def test_invalid_preprocessing_run_leaves_failed_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            prep_dir = root / "preprocessing"
+            prep_dir.mkdir()
+            (prep_dir / "metadata.yaml").write_text(
+                yaml.safe_dump({"run": {"status": "running"}}),
+                encoding="utf-8",
+            )
+            run_dir = root / "experiment"
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "must describe a completed run",
+            ):
+                ExperimentRun.start(
+                    stage="characterizer",
+                    config={},
+                    exp_dir=run_dir,
+                    preprocessing_dir=prep_dir,
+                    repository_root=self._source_root(root),
+                )
+
+            metadata = self._metadata(run_dir)
+
+        self.assertEqual(metadata["run"]["status"], "failed")
+        self.assertEqual(metadata["run"]["error_type"], "ValueError")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
 from models.unified_model import UnifiedModel
 from utils.augmentation import apply_lsst_pipeline
-from utils.checkpoints import experiment_artifact_path
+from utils.checkpoints import experiment_artefact_path
 from utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
 from scripts.inference import load_data, load_model
 
@@ -64,7 +64,7 @@ def load_from_experiment(exp_dir, cfg, device):
 
     model.load_state_dict(
         torch.load(
-            experiment_artifact_path(exp_dir, cfg["checkpoint"]["model"]),
+            experiment_artefact_path(exp_dir, cfg["checkpoint"]["model"]),
             map_location=device,
             weights_only=True,
         )
@@ -72,13 +72,13 @@ def load_from_experiment(exp_dir, cfg, device):
     model.eval()
 
     x_scaler = joblib.load(
-        experiment_artifact_path(exp_dir, cfg["checkpoint"]["x_scaler"])
+        experiment_artefact_path(exp_dir, cfg["checkpoint"]["x_scaler"])
     )
     y_scaler = joblib.load(
-        experiment_artifact_path(exp_dir, cfg["checkpoint"]["y_scaler"])
+        experiment_artefact_path(exp_dir, cfg["checkpoint"]["y_scaler"])
     )
     pca = joblib.load(
-        experiment_artifact_path(exp_dir, cfg["checkpoint"]["pca"])
+        experiment_artefact_path(exp_dir, cfg["checkpoint"]["pca"])
     )
 
     return model, x_scaler, y_scaler, pca

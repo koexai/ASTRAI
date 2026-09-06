@@ -32,7 +32,7 @@ from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
 from models.unified_model import UnifiedModel
 from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from utils.checkpoints import (
-    checkpoint_artifact_paths,
+    checkpoint_artefact_paths,
     load_config,
     load_data,
     save_model_checkpoint,
@@ -413,7 +413,7 @@ def _execute_unified_training(cfg, experiment, device):
             experiment.record_checkpoint(
                 fold_idx,
                 best_global_r2,
-                checkpoint_artifact_paths(exp_dir, cfg["checkpoint"]),
+                checkpoint_artefact_paths(exp_dir, cfg["checkpoint"]),
             )
 
     print("\n" + "=" * 50)
@@ -435,7 +435,7 @@ def _execute_unified_training(cfg, experiment, device):
 def run_unified_training(
     cfg,
     exp_dir=None,
-    config_path="configs/default.yaml",
+    config_path=None,
 ):
     """Train the unified model and return its isolated experiment directory."""
     train_cfg = cfg["training"]

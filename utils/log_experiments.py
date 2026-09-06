@@ -10,6 +10,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,7 +89,8 @@ def create_experiment_dir(base_dir="experiments", now=None):
 
 def create_pipeline_run_id(now=None):
     """Return a timestamp-based identifier shared by related stage runs."""
-    return (now or _utc_now()).strftime("pipeline_%Y%m%d_%H%M%S_%f")
+    timestamp = (now or _utc_now()).strftime("%Y%m%d_%H%M%S_%f")
+    return f"pipeline_{timestamp}_{uuid.uuid4().hex[:8]}"
 
 
 def save_code(exp_dir, folder=_REPOSITORY_ROOT):
@@ -275,7 +277,9 @@ class ExperimentRun:
             "config": {
                 "snapshot": _CONFIG_SNAPSHOT_NAME,
                 "source_path": (
-                    None if config_path is None else str(config_path)
+                    None
+                    if config_path is None
+                    else str(Path(config_path).expanduser().resolve())
                 ),
             },
             "source": {
@@ -299,10 +303,23 @@ class ExperimentRun:
                 "base_seed": base_seed,
                 "fold_seed_plans": {},
             },
-            "preprocessing": cls._snapshot_preprocessing_metadata(
-                directory,
-                preprocessing_dir,
-            ),
+            "preprocessing": {
+                "mode": (
+                    "in-process"
+                    if preprocessing_dir is None
+                    else "precomputed"
+                ),
+                "source_path": (
+                    None
+                    if preprocessing_dir is None
+                    else str(Path(preprocessing_dir).expanduser().resolve())
+                ),
+                "metadata_snapshot": None,
+                "metadata_sha256": None,
+                "artefact_schema_version": None,
+                "source_run_status": None,
+                "legacy_without_metadata": None,
+            },
             "results": {
                 "folds": [],
                 "summary": {},
@@ -323,6 +340,12 @@ class ExperimentRun:
         run._write_metadata()
 
         try:
+            run.metadata["preprocessing"] = (
+                cls._snapshot_preprocessing_metadata(
+                    directory,
+                    preprocessing_dir,
+                )
+            )
             save_config(
                 directory,
                 config_path=config_path or "configs/default.yaml",
@@ -350,7 +373,7 @@ class ExperimentRun:
                 "legacy_without_metadata": False,
             }
 
-        source_dir = Path(preprocessing_dir).expanduser()
+        source_dir = Path(preprocessing_dir).expanduser().resolve()
         source_metadata = source_dir / _METADATA_NAME
         result = {
             "mode": "precomputed",

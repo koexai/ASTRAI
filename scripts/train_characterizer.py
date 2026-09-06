@@ -30,9 +30,9 @@ from utils.metrics import (
 )
 from utils.parameter_validation import validate_parameter_names
 from utils.checkpoints import (
-    checkpoint_artifact_paths,
+    checkpoint_artefact_paths,
     copy_preprocessing_artifacts,
-    experiment_artifact_path,
+    experiment_artefact_path,
 )
 from utils.fold_selection import resolve_fold_indices
 from utils.log_experiments import ExperimentRun, summarise_metric_history
@@ -202,7 +202,7 @@ def run_characterizer_training(
     cfg,
     prep_dir="preprocessed",
     exp_dir=None,
-    config_path="configs/default_split.yaml",
+    config_path=None,
     pipeline_run_id=None,
 ):
     """Train the characterizer and save checkpoints to exp_dir.
@@ -215,8 +215,8 @@ def run_characterizer_training(
         Directory with preprocess.py output.
     exp_dir : str or None
         Experiment directory. Created automatically if None.
-    config_path : str
-        Path to the config file (for saving into experiment dir).
+    config_path : str or None
+        Source config path to record. The effective config is always saved.
     pipeline_run_id : str or None
         Identifier shared with a generator run from the same split pipeline.
 
@@ -371,7 +371,7 @@ def run_characterizer_training(
                 best_r2 = metrics["R2"]
                 torch.save(
                     model.state_dict(),
-                    experiment_artifact_path(
+                    experiment_artefact_path(
                         exp_dir,
                         char_cfg["checkpoint"]["model"],
                     ),
@@ -382,7 +382,7 @@ def run_characterizer_training(
                 experiment.record_checkpoint(
                     fold_idx,
                     best_r2,
-                    checkpoint_artifact_paths(
+                    checkpoint_artefact_paths(
                         exp_dir,
                         char_cfg["checkpoint"],
                     ),
