@@ -103,7 +103,7 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["preprocessing_artefact_schema_version"],
-                3,
+                4,
             )
             self.assertEqual(metadata["run"]["status"], "completed")
             self.assertIsNotNone(metadata["run"]["completed_at_utc"])
@@ -134,6 +134,10 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                 },
             )
             self.assertEqual(metadata["array_artefacts"], {})
+            self.assertEqual(metadata["environment"]["schema_version"], 1)
+            self.assertIn("python", metadata["environment"])
+            self.assertIn("installed_distributions", metadata["environment"])
+            self.assertIn("pytorch", metadata["environment"])
             self.assertEqual(
                 metadata["git"],
                 {

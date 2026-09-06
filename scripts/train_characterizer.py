@@ -298,6 +298,7 @@ def run_characterizer_training(
                 fold_idx,
             )
             configure_torch_determinism(seed_plan["model"])
+            experiment.record_execution_environment(device=device)
             print(
                 f"    [Fold {fold_idx}] Reproducibility seeds: "
                 f"model={seed_plan['model']}, "

@@ -39,13 +39,14 @@ from utils.reproducibility import (
     build_preprocessing_seed_plan,
     make_numpy_rng,
 )
+from utils.runtime_environment import capture_runtime_environment
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNS_DIR = _REPOSITORY_ROOT / "preprocessed"
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _METADATA_NAME = "metadata.yaml"
-_ARTEFACT_SCHEMA_VERSION = 3
+_ARTEFACT_SCHEMA_VERSION = 4
 
 
 def _utc_now():
@@ -204,6 +205,7 @@ def _initial_metadata(cfg, started_at, repository_root):
         },
         "array_artefacts": {},
         "git": _git_metadata(repository_root),
+        "environment": capture_runtime_environment(),
     }
 
 
