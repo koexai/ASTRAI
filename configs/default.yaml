@@ -37,7 +37,7 @@ visualisation:
       Upper 20%: [0.8, 1.0]
 
 checkpoint:
-  model: experiments/20260306_162350/best_split_mlp_model.pth
-  x_scaler: experiments/20260306_162350/best_split_mlp_x_scaler.pkl
-  y_scaler: experiments/20260306_162350/best_split_mlp_y_scaler.pkl
-  pca: experiments/20260306_162350/best_split_mlp_pca.pkl
+  model: best_split_mlp_model.pth
+  x_scaler: best_split_mlp_x_scaler.pkl
+  y_scaler: best_split_mlp_y_scaler.pkl
+  pca: best_split_mlp_pca.pkl

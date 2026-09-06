@@ -16,7 +16,7 @@ import yaml
 from preprocess import run_preprocessing
 from train_characterizer import run_characterizer_training
 from train_generator import run_generator_training
-from utils.log_experiments import create_experiment_dir, save_code, save_config
+from utils.log_experiments import create_pipeline_run_id
 
 
 def main():
@@ -47,6 +47,7 @@ def main():
 
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    pipeline_run_id = create_pipeline_run_id()
 
     # 1. Preprocessing (PCA + scalers fitted once, shared by both models)
     print("=" * 50)
@@ -62,22 +63,22 @@ def main():
     print("\n" + "=" * 50)
     print("STAGE 2: CHARACTERIZER TRAINING")
     print("=" * 50)
-    char_exp = create_experiment_dir(base_dir="experiments/characterizer")
-    save_code(char_exp)
-    save_config(char_exp, config_path=args.config)
-    run_characterizer_training(
-        cfg, prep_dir=prep_dir, exp_dir=char_exp, config_path=args.config
+    char_exp = run_characterizer_training(
+        cfg,
+        prep_dir=prep_dir,
+        config_path=args.config,
+        pipeline_run_id=pipeline_run_id,
     )
 
     # 3. Generator training (own experiment dir)
     print("\n" + "=" * 50)
     print("STAGE 3: GENERATOR TRAINING")
     print("=" * 50)
-    gen_exp = create_experiment_dir(base_dir="experiments/generator")
-    save_code(gen_exp)
-    save_config(gen_exp, config_path=args.config)
-    run_generator_training(
-        cfg, prep_dir=prep_dir, exp_dir=gen_exp, config_path=args.config
+    gen_exp = run_generator_training(
+        cfg,
+        prep_dir=prep_dir,
+        config_path=args.config,
+        pipeline_run_id=pipeline_run_id,
     )
 
     print("\n" + "=" * 50)

@@ -7,6 +7,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import torch
+import yaml
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -92,6 +93,32 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
         joblib.dump(x_scaler, prep_dir / "x_scaler.pkl")
         joblib.dump(y_scaler, prep_dir / "y_scaler.pkl")
         joblib.dump(pca, prep_dir / "pca.pkl")
+        (prep_dir / "metadata.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "preprocessing_artefact_schema_version": 3,
+                    "run": {"status": "completed"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _assert_run_metadata(self, run_dir, stage, model_name):
+        metadata = yaml.safe_load(
+            (run_dir / "metadata.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(metadata["run"]["status"], "completed")
+        self.assertEqual(metadata["run"]["stage"], stage)
+        self.assertEqual(metadata["reproducibility"]["base_seed"], 42)
+        self.assertIn(
+            "fold_1",
+            metadata["reproducibility"]["fold_seed_plans"],
+        )
+        self.assertEqual(metadata["preprocessing"]["source_run_status"], "completed")
+        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 3)
+        self.assertEqual(metadata["checkpoint"]["best_fold"], 1)
+        self.assertIn(model_name, metadata["artefacts"])
+        self.assertIn("preprocessing_metadata.yaml", metadata["artefacts"])
 
     @staticmethod
     def _assert_checkpoints_equal(first_path, second_path):
@@ -137,6 +164,11 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
                 first_dir / "characterizer.pth",
                 second_dir / "characterizer.pth",
             )
+            self._assert_run_metadata(
+                first_dir,
+                "characterizer",
+                "characterizer.pth",
+            )
 
     def test_generator_checkpoints_repeat_exactly(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -164,6 +196,11 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             self._assert_checkpoints_equal(
                 first_dir / "generator.pth",
                 second_dir / "generator.pth",
+            )
+            self._assert_run_metadata(
+                first_dir,
+                "generator",
+                "generator.pth",
             )
 
 

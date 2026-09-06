@@ -17,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
+
 
 EXPERIMENT_METADATA_VERSION = 1
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
@@ -236,6 +238,8 @@ class ExperimentRun:
         folds=None,
         base_seed=None,
         device=None,
+        checkpoint_metric="R2",
+        checkpoint_scope="held-out fold",
         repository_root=_REPOSITORY_ROOT,
     ):
         """Create a run, snapshot its inputs and record ``running`` status."""
@@ -281,10 +285,15 @@ class ExperimentRun:
             "data": {
                 "n_params": config.get("data", {}).get("n_params"),
                 "param_names": parameter_names,
+                "array_dtypes": {
+                    "model": MODEL_ARRAY_DTYPE.name,
+                    "indices": INDEX_ARRAY_DTYPE.name,
+                },
             },
             "execution": {
                 "device": None if device is None else str(device),
                 "folds": None if folds is None else list(folds),
+                "deterministic_algorithms": True,
             },
             "reproducibility": {
                 "base_seed": base_seed,
@@ -300,9 +309,9 @@ class ExperimentRun:
             },
             "checkpoint": {
                 "selection": {
-                    "metric": "R2",
+                    "metric": checkpoint_metric,
                     "mode": "max",
-                    "scope": "held-out fold",
+                    "scope": checkpoint_scope,
                 },
                 "best_fold": None,
                 "best_score": None,

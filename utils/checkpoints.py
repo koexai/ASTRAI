@@ -6,6 +6,7 @@ associated scalers and PCA, as well as saving checkpoints after training.
 
 import os
 import shutil
+from pathlib import Path
 import joblib
 import yaml
 import torch
@@ -14,6 +15,30 @@ import numpy as np
 from models.split_mlp import SplitMLPRegressor
 from models.residual_blocks import MLPWithResiduals
 from utils.data import load_raw_data
+
+
+def experiment_artifact_path(exp_dir, configured_path):
+    """Resolve a configured artefact name inside one experiment directory.
+
+    Historical configurations may contain a complete experiment path. Only
+    the final filename is used when an experiment directory is supplied, so a
+    new run cannot write outside its own directory or recreate an old path.
+    """
+    filename = Path(configured_path).name
+    if not filename or filename in {".", ".."}:
+        raise ValueError(
+            f"Invalid experiment artefact name: {configured_path!r}."
+        )
+    return Path(exp_dir) / filename
+
+
+def checkpoint_artifact_paths(exp_dir, cfg_checkpoint):
+    """Return all configured checkpoint artefacts keyed by their role."""
+    return {
+        role: experiment_artifact_path(exp_dir, configured_path)
+        for role, configured_path in cfg_checkpoint.items()
+        if role in {"model", "x_scaler", "y_scaler", "pca"}
+    }
 
 
 def load_config(path):
@@ -31,9 +56,9 @@ def _load_scalers_and_pca(ckpt, exp_dir):
     y_scaler: the loaded StandardScaler for target parameters
     pca: the loaded PCA transformer
     """
-    x_scaler = joblib.load(os.path.join(exp_dir, ckpt["x_scaler"]))
-    y_scaler = joblib.load(os.path.join(exp_dir, ckpt["y_scaler"]))
-    pca = joblib.load(os.path.join(exp_dir, ckpt["pca"]))
+    x_scaler = joblib.load(experiment_artifact_path(exp_dir, ckpt["x_scaler"]))
+    y_scaler = joblib.load(experiment_artifact_path(exp_dir, ckpt["y_scaler"]))
+    pca = joblib.load(experiment_artifact_path(exp_dir, ckpt["pca"]))
     return x_scaler, y_scaler, pca
 
 
@@ -63,7 +88,7 @@ def load_characterizer(cfg, device, exp_dir):
     ckpt = char_cfg["checkpoint"]
     model.load_state_dict(
         torch.load(
-            os.path.join(exp_dir, ckpt["model"]),
+            experiment_artifact_path(exp_dir, ckpt["model"]),
             map_location=device,
             weights_only=True,
         )
@@ -100,7 +125,7 @@ def load_generator(cfg, device, exp_dir):
     ckpt = gen_cfg["checkpoint"]
     model.load_state_dict(
         torch.load(
-            os.path.join(exp_dir, ckpt["model"]),
+            experiment_artifact_path(exp_dir, ckpt["model"]),
             map_location=device,
             weights_only=True,
         )
@@ -164,19 +189,19 @@ def save_model_checkpoint(
     """
     torch.save(
         model.state_dict(),
-        os.path.join(exp_dir, cfg_checkpoint["model"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["model"]),
     )
     joblib.dump(
         x_scaler,
-        os.path.join(exp_dir, cfg_checkpoint["x_scaler"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["x_scaler"]),
     )
     joblib.dump(
         y_scaler,
-        os.path.join(exp_dir, cfg_checkpoint["y_scaler"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["y_scaler"]),
     )
     joblib.dump(
         pca,
-        os.path.join(exp_dir, cfg_checkpoint["pca"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["pca"]),
     )
 
 
@@ -194,13 +219,13 @@ def copy_preprocessing_artifacts(prep_dir, exp_dir, cfg_checkpoint):
     """
     shutil.copy2(
         os.path.join(prep_dir, "x_scaler.pkl"),
-        os.path.join(exp_dir, cfg_checkpoint["x_scaler"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["x_scaler"]),
     )
     shutil.copy2(
         os.path.join(prep_dir, "y_scaler.pkl"),
-        os.path.join(exp_dir, cfg_checkpoint["y_scaler"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["y_scaler"]),
     )
     shutil.copy2(
         os.path.join(prep_dir, "pca.pkl"),
-        os.path.join(exp_dir, cfg_checkpoint["pca"]),
+        experiment_artifact_path(exp_dir, cfg_checkpoint["pca"]),
     )

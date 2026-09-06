@@ -25,9 +25,13 @@ from train import print_final_stats
 from models.split_mlp import MLPWithResiduals
 from utils.array_dtypes import load_model_array
 from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
-from utils.checkpoints import copy_preprocessing_artifacts
+from utils.checkpoints import (
+    checkpoint_artifact_paths,
+    copy_preprocessing_artifacts,
+    experiment_artifact_path,
+)
 from utils.fold_selection import resolve_fold_indices
-from utils.log_experiments import create_experiment_dir, save_code, save_config
+from utils.log_experiments import ExperimentRun, summarise_metric_history
 from utils.reproducibility import (
     build_training_seed_plan,
     configure_torch_determinism,
@@ -143,6 +147,7 @@ def run_generator_training(
     prep_dir="preprocessed",
     exp_dir=None,
     config_path="configs/default_split.yaml",
+    pipeline_run_id=None,
 ):
     """Train the generator and save checkpoints to exp_dir.
 
@@ -156,6 +161,8 @@ def run_generator_training(
         Experiment directory. Created automatically if None.
     config_path : str
         Path to the config file (for saving into experiment dir).
+    pipeline_run_id : str or None
+        Identifier shared with a characterizer run from the same pipeline.
 
     Returns
     -------
@@ -173,121 +180,161 @@ def run_generator_training(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if exp_dir is None:
-        exp_dir = create_experiment_dir(base_dir="experiments/generator")
-        save_code(exp_dir)
-        save_config(exp_dir, config_path=config_path)
+    experiment = ExperimentRun.start(
+        stage="generator",
+        config=cfg,
+        config_path=config_path,
+        exp_dir=exp_dir,
+        base_dir="experiments/generator",
+        preprocessing_dir=prep_dir,
+        pipeline_run_id=pipeline_run_id,
+        folds=fold_indices,
+        base_seed=base_seed,
+        device=device,
+    )
+    exp_dir = str(experiment.directory)
     print(f"Generator experiment directory: {exp_dir}")
 
     history = {"RMSE": [], "RRMSE": [], "MAE": [], "R2": []}
     best_r2 = -np.inf
 
-    print(
-        f"Starting Generator Training (MLPWithResiduals) with PCA ({n_pca} components)..."
-    )
-
-    if held_out_fold is None:
-        print(f"Training all {n_splits} folds.")
-    else:
-        print(f"Training split with held-out fold {held_out_fold}.")
-
-    for fold_idx in fold_indices:
-        start_time = time.time()
-        fold_dir = os.path.join(prep_dir, f"fold_{fold_idx}")
-
-        (
-            x_train_clean_pca,
-            x_train_aug_pca,
-            y_train_scaled,
-            y_test_scaled,
-            x_test_clean,
-        ) = _load_fold_data(fold_dir)
-        print(f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}")
-
-        pca_train_combined = np.vstack([x_train_clean_pca, x_train_aug_pca])
-        y_train_combined = np.vstack([y_train_scaled, y_train_scaled])
-
-        seed_plan = build_training_seed_plan(
-            base_seed,
-            "generator",
-            fold_idx,
-        )
-        configure_torch_determinism(seed_plan["model"])
+    try:
         print(
-            f"    [Fold {fold_idx}] Reproducibility seeds: "
-            f"model={seed_plan['model']}, "
-            f"data_loader={seed_plan['data_loader']}"
+            "Starting Generator Training (MLPWithResiduals) with PCA "
+            f"({n_pca} components)..."
         )
 
-        train_ds = TensorDataset(
-            torch.FloatTensor(y_train_combined),
-            torch.FloatTensor(pca_train_combined),
-        )
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=gen_cfg["training"]["batch_size"],
-            shuffle=True,
-            generator=make_torch_generator(seed_plan["data_loader"]),
-            worker_init_fn=seed_data_loader_worker,
-        )
+        if held_out_fold is None:
+            print(f"Training all {n_splits} folds.")
+        else:
+            print(f"Training split with held-out fold {held_out_fold}.")
 
-        model = MLPWithResiduals(
-            input_dim=n_params,
-            width=gen_cfg["model"]["width"],
-            out_dim=n_pca,
-            depth=gen_cfg["model"]["depth"],
-            dropout=gen_cfg["model"]["dropout"],
-        ).to(device)
+        for fold_idx in fold_indices:
+            start_time = time.time()
+            fold_dir = os.path.join(prep_dir, f"fold_{fold_idx}")
 
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=gen_cfg["training"]["learning_rate"]
-        )
-        criterion = torch.nn.MSELoss()
-        scheduler = CosineAnnealingLR(
-            optimizer, T_max=gen_cfg["training"]["epochs"]
-        )
-
-        _train_model(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            scheduler,
-            gen_cfg["training"]["epochs"],
-            device,
-        )
-
-        metrics = _evaluate_generator(
-            model, y_test_scaled, x_test_clean, prep_dir, device
-        )
-
-        for key, values in history.items():
-            values.append(metrics[key])
-
-        elapsed = time.time() - start_time
-        print(f"Fold {fold_idx} | {elapsed:.0f}s | R2: {metrics['R2']:.4f}")
-
-        if metrics["R2"] > best_r2:
-            best_r2 = metrics["R2"]
-            torch.save(
-                model.state_dict(),
-                os.path.join(exp_dir, gen_cfg["checkpoint"]["model"]),
-            )
-            copy_preprocessing_artifacts(
-                prep_dir, exp_dir, gen_cfg["checkpoint"]
+            (
+                x_train_clean_pca,
+                x_train_aug_pca,
+                y_train_scaled,
+                y_test_scaled,
+                x_test_clean,
+            ) = _load_fold_data(fold_dir)
+            print(
+                f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
             )
 
-    print("\n" + "=" * 50)
-    print("GENERATOR - FINAL PERFORMANCE REPORT")
-    print(f"PCA Components: {n_pca}")
-    print("=" * 50)
-    if held_out_fold is None:
-        print_final_stats("GENERATION", history)
-    else:
-        print(f"\n--- GENERATION (Held-out fold {held_out_fold}) ---")
-        for key, values in history.items():
-            print(f"  {key}: {values[0]:.4f}")
-    print("=" * 50)
+            pca_train_combined = np.vstack(
+                [x_train_clean_pca, x_train_aug_pca]
+            )
+            y_train_combined = np.vstack([y_train_scaled, y_train_scaled])
+
+            seed_plan = build_training_seed_plan(
+                base_seed,
+                "generator",
+                fold_idx,
+            )
+            configure_torch_determinism(seed_plan["model"])
+            print(
+                f"    [Fold {fold_idx}] Reproducibility seeds: "
+                f"model={seed_plan['model']}, "
+                f"data_loader={seed_plan['data_loader']}"
+            )
+
+            train_ds = TensorDataset(
+                torch.FloatTensor(y_train_combined),
+                torch.FloatTensor(pca_train_combined),
+            )
+            train_loader = DataLoader(
+                train_ds,
+                batch_size=gen_cfg["training"]["batch_size"],
+                shuffle=True,
+                generator=make_torch_generator(seed_plan["data_loader"]),
+                worker_init_fn=seed_data_loader_worker,
+            )
+
+            model = MLPWithResiduals(
+                input_dim=n_params,
+                width=gen_cfg["model"]["width"],
+                out_dim=n_pca,
+                depth=gen_cfg["model"]["depth"],
+                dropout=gen_cfg["model"]["dropout"],
+            ).to(device)
+
+            optimizer = torch.optim.Adam(
+                model.parameters(), lr=gen_cfg["training"]["learning_rate"]
+            )
+            criterion = torch.nn.MSELoss()
+            scheduler = CosineAnnealingLR(
+                optimizer, T_max=gen_cfg["training"]["epochs"]
+            )
+
+            _train_model(
+                model,
+                train_loader,
+                optimizer,
+                criterion,
+                scheduler,
+                gen_cfg["training"]["epochs"],
+                device,
+            )
+
+            metrics = _evaluate_generator(
+                model, y_test_scaled, x_test_clean, prep_dir, device
+            )
+
+            for key, values in history.items():
+                values.append(metrics[key])
+
+            elapsed = time.time() - start_time
+            print(
+                f"Fold {fold_idx} | {elapsed:.0f}s | "
+                f"R2: {metrics['R2']:.4f}"
+            )
+            experiment.record_fold(
+                fold_idx,
+                metrics,
+                seed_plan,
+                elapsed,
+            )
+
+            if metrics["R2"] > best_r2:
+                best_r2 = metrics["R2"]
+                torch.save(
+                    model.state_dict(),
+                    experiment_artifact_path(
+                        exp_dir,
+                        gen_cfg["checkpoint"]["model"],
+                    ),
+                )
+                copy_preprocessing_artifacts(
+                    prep_dir, exp_dir, gen_cfg["checkpoint"]
+                )
+                experiment.record_checkpoint(
+                    fold_idx,
+                    best_r2,
+                    checkpoint_artifact_paths(
+                        exp_dir,
+                        gen_cfg["checkpoint"],
+                    ),
+                )
+
+        print("\n" + "=" * 50)
+        print("GENERATOR - FINAL PERFORMANCE REPORT")
+        print(f"PCA Components: {n_pca}")
+        print("=" * 50)
+        if held_out_fold is None:
+            print_final_stats("GENERATION", history)
+        else:
+            print(f"\n--- GENERATION (Held-out fold {held_out_fold}) ---")
+            for key, values in history.items():
+                print(f"  {key}: {values[0]:.4f}")
+        print("=" * 50)
+
+        experiment.complete(summarise_metric_history(history))
+    except BaseException as exc:
+        experiment.fail(exc)
+        raise
 
     return exp_dir
 

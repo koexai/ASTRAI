@@ -2,7 +2,9 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import Mock
 
 import numpy as np
 import torch
@@ -40,6 +42,8 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
 
     def _run_and_capture_checkpoints(self):
         checkpoints = []
+        experiment = Mock()
+        experiment.directory = Path("run")
 
         def capture_checkpoint(
             _exp_dir,
@@ -64,9 +68,11 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
                 "load_data",
                 return_value=(self.x_raw, self.y_raw),
             ),
-            patch.object(train, "create_experiment_dir", return_value="run"),
-            patch.object(train, "save_code"),
-            patch.object(train, "save_config"),
+            patch.object(
+                train.ExperimentRun,
+                "start",
+                return_value=experiment,
+            ),
             patch.object(
                 train,
                 "save_model_checkpoint",

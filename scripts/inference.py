@@ -20,7 +20,6 @@ Usage::
     python inference.py --output predictions.parquet   # save predictions
 """
 import argparse
-import os
 import numpy as np
 import pandas as pd
 import torch
@@ -36,7 +35,7 @@ from utils.metrics import (
     get_rrmse,
     compute_metrics,
 )
-from utils.checkpoints import load_data
+from utils.checkpoints import experiment_artifact_path, load_data
 
 
 def load_config(path="configs/default.yaml"):
@@ -76,7 +75,7 @@ def load_model(cfg, device, exp_dir=None):
 
     def _path(key):
         name = cfg["checkpoint"][key]
-        return os.path.join(exp_dir, name) if exp_dir else name
+        return experiment_artifact_path(exp_dir, name) if exp_dir else name
 
     regressor = SplitMLPRegressor(
         input_dim=n_pca,
