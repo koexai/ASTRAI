@@ -16,16 +16,25 @@ pip install -r requirements.txt
 
 For GPU support, install PyTorch with CUDA following the [official instructions](https://pytorch.org/get-started/locally/).
 
+`requirements.txt` declares the runtime dependencies using minimum accepted
+versions. The unit tests use Python's standard library and currently require no
+additional third-party test dependencies. A single exact lock file is not
+provided because PyTorch installations differ between CPU, CUDA and macOS
+environments. Preprocessing and training metadata record the versions actually
+installed for each run, allowing its software environment to be identified.
+
 ## Automated Validation
 
 Every pull request and every push to `main` runs the full unit-test suite on
-Python 3.12 and Ubuntu. The workflow compiles the Python sources and runs the
-tests with a headless Matplotlib backend. It does not train models or require
-external datasets or experiment artefacts.
+Python 3.12 and Ubuntu 24.04. The workflow verifies the installed dependency
+set, compiles the Python sources and runs the tests with a headless Matplotlib
+backend. GitHub Actions are pinned to complete commit SHAs. The workflow does
+not train models or require external datasets or experiment artefacts.
 
 Run the same checks locally from the repository root:
 
 ```bash
+python -m pip check
 python -m compileall -q models scripts utils tests
 
 PYTHONPATH="$PWD:$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
@@ -255,10 +264,10 @@ preprocessed/
 `metadata.yaml` records the artefact schema version, UTC start and completion
 times, run status, configured random seed, fold list, Git commit, branch and
 whether the working tree was dirty. It also records the dtype and shape of
-every NumPy artefact produced by a completed run. The current schema also
-records the seed-derivation scheme and the effective K-fold, PCA and per-fold
-augmentation seeds. Its version history is summarised under Experiment
-Tracking.
+every NumPy artefact produced by a completed run. The current schema records
+the seed-derivation scheme, the effective K-fold, PCA and per-fold augmentation
+seeds, and a snapshot of the runtime environment. Its version history is
+summarised under Experiment Tracking.
 
 Persisted model arrays use `float32`, while fold indices use `int64`. The cast
 is applied after augmentation, scaling and PCA, so it does not change those
@@ -505,9 +514,12 @@ The experiment metadata is written when a run starts, after every completed
 fold and whenever the best checkpoint changes. It records the run stage and
 status, UTC times, Git revision and dirty state, effective configuration,
 device, parameter order, dtype contract, selected folds, base and derived
-seeds, per-fold and summary metrics, checkpoint selection and SHA-256 digests
-for every persisted artefact. Failures retain their error and any partial fold
-records. Characterizer and Generator runs started by `main.py` share a
+seeds, runtime environment, per-fold and summary metrics, checkpoint selection
+and SHA-256 digests for every persisted artefact. The runtime snapshot includes
+Python, the operating-system platform, installed distribution versions,
+PyTorch backends, thread counts and effective deterministic settings. Failures
+retain their error and any partial fold records. Characterizer and Generator
+runs started by `main.py` share a
 `pipeline_run_id`, and each snapshots the metadata of its completed
 preprocessing input. Older preprocessing directories without metadata remain
 accepted and are explicitly marked as legacy inputs.
@@ -524,7 +536,9 @@ configuration compatibility while keeping all output within the current run.
 | Preprocessing artefacts | 1 | Run lifecycle, configuration snapshot, fold settings and Git provenance |
 | Preprocessing artefacts | 2 | Array dtype contract and per-array dtype/shape manifest |
 | Preprocessing artefacts | 3 | Seed-derivation scheme and effective preprocessing seed plan |
+| Preprocessing artefacts | 4 | Python, platform, installed distributions and PyTorch runtime environment |
 | Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
+| Training experiments | 2 | Runtime environment and effective deterministic execution settings |
 
 ## Metrics
 
