@@ -35,18 +35,18 @@ class SplitPipelineTests(unittest.TestCase):
                 ) as run_preprocessing,
                 patch.object(
                     pipeline_main,
-                    "create_experiment_dir",
-                    side_effect=["characterizer-run", "generator-run"],
+                    "create_pipeline_run_id",
+                    return_value="pipeline-123",
                 ),
-                patch.object(pipeline_main, "save_code"),
-                patch.object(pipeline_main, "save_config"),
                 patch.object(
                     pipeline_main,
                     "run_characterizer_training",
+                    return_value="characterizer-run",
                 ) as run_characterizer,
                 patch.object(
                     pipeline_main,
                     "run_generator_training",
+                    return_value="generator-run",
                 ) as run_generator,
             ):
                 pipeline_main.main()
@@ -59,14 +59,14 @@ class SplitPipelineTests(unittest.TestCase):
             run_characterizer.assert_called_once_with(
                 {},
                 prep_dir=completed_prep,
-                exp_dir="characterizer-run",
                 config_path=str(config_path),
+                pipeline_run_id="pipeline-123",
             )
             run_generator.assert_called_once_with(
                 {},
                 prep_dir=completed_prep,
-                exp_dir="generator-run",
                 config_path=str(config_path),
+                pipeline_run_id="pipeline-123",
             )
 
     def test_omitted_prep_out_requests_an_automatic_run_directory(self):
@@ -87,13 +87,19 @@ class SplitPipelineTests(unittest.TestCase):
                 ) as run_preprocessing,
                 patch.object(
                     pipeline_main,
-                    "create_experiment_dir",
-                    side_effect=["characterizer-run", "generator-run"],
+                    "create_pipeline_run_id",
+                    return_value="pipeline-123",
                 ),
-                patch.object(pipeline_main, "save_code"),
-                patch.object(pipeline_main, "save_config"),
-                patch.object(pipeline_main, "run_characterizer_training"),
-                patch.object(pipeline_main, "run_generator_training"),
+                patch.object(
+                    pipeline_main,
+                    "run_characterizer_training",
+                    return_value="characterizer-run",
+                ),
+                patch.object(
+                    pipeline_main,
+                    "run_generator_training",
+                    return_value="generator-run",
+                ),
             ):
                 pipeline_main.main()
 

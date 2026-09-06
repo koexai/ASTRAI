@@ -113,16 +113,16 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
         }
 
         with mock.patch.object(
-            train_characterizer,
-            "create_experiment_dir",
-        ) as create_experiment_dir:
+            train_characterizer.ExperimentRun,
+            "start",
+        ) as start_experiment:
             with self.assertRaisesRegex(
                 ValueError,
                 "data.n_params does not match data.param_names",
             ):
                 train_characterizer.run_characterizer_training(cfg)
 
-        create_experiment_dir.assert_not_called()
+        start_experiment.assert_not_called()
 
     def test_records_each_fold_in_parameter_history(self):
         history = train_characterizer._initialise_parameter_history(
@@ -228,7 +228,15 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
             },
         }
 
+        experiment = mock.Mock()
+        experiment.directory = Path("/tmp/experiment")
+
         with (
+            mock.patch.object(
+                train_characterizer.ExperimentRun,
+                "start",
+                return_value=experiment,
+            ),
             mock.patch.object(
                 train_characterizer,
                 "_load_fold_data",
@@ -265,6 +273,9 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
             )
 
         save.assert_called_once()
+        self.assertEqual(experiment.record_fold.call_count, 2)
+        experiment.record_checkpoint.assert_called_once()
+        experiment.complete.assert_called_once()
 
     def test_prints_multi_fold_parameter_statistics(self):
         output = io.StringIO()

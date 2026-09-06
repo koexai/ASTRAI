@@ -31,9 +31,14 @@ from sklearn.decomposition import PCA
 from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
 from models.unified_model import UnifiedModel
 from utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
-from utils.checkpoints import load_config, load_data, save_model_checkpoint
+from utils.checkpoints import (
+    checkpoint_artefact_paths,
+    load_config,
+    load_data,
+    save_model_checkpoint,
+)
 from utils.augmentation import apply_lsst_pipeline
-from utils.log_experiments import create_experiment_dir, save_code, save_config
+from utils.log_experiments import ExperimentRun, summarise_metric_history
 from utils.reproducibility import (
     build_training_seed_plan,
     build_unified_preprocessing_seed_plan,
@@ -231,36 +236,20 @@ def _evaluate_fold(
     return char_metrics, gen_metrics
 
 
-def main():
-    """Entry point: load config, run K-Fold training, and save the best model.
+def _execute_unified_training(cfg, experiment, device):
+    """Run unified cross-validation inside an initialised experiment.
+
     Steps:
-    1. Parse command-line arguments for config path.
-    2. Load the YAML configuration and determine compute device.
-    3. Load the raw data (curves and parameters).
-    4. For each fold in K-Fold cross-validation:
+    1. Load the raw data (curves and parameters).
+    2. For each fold in K-Fold cross-validation:
        a. Preprocess the fold's data (augmentation, scaling, PCA).
        b. Instantiate the UnifiedModel and optimizer.
        c. Train the model on the training fold.
        d. Evaluate on the test fold and record metrics.
        e. Save the model checkpoint if it has the best characterization R2 so far.
-    5. After all folds, print aggregate statistics across folds.
+    3. Report and persist aggregate statistics across folds.
     """
-    parser = argparse.ArgumentParser(
-        description="ASTRAI unified model training"
-    )
-    parser.add_argument(
-        "--config",
-        default="configs/default.yaml",
-        help="Path to YAML config file (default: configs/default.yaml)",
-    )
-    args = parser.parse_args()
-
-    cfg = load_config(args.config)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    exp_dir = create_experiment_dir()
-    save_code(exp_dir)
-    save_config(exp_dir, config_path=args.config)
+    exp_dir = str(experiment.directory)
     print(f"Experiment directory: {exp_dir}")
 
     data_cfg = cfg["data"]
@@ -402,11 +391,29 @@ def main():
             f"Fold {fold_idx} | {elapsed:.0f}s |",
             f"Char R2: {char_m['R2']:.4f} | Gen R2: {gen_m['R2']:.4f}",
         )
+        experiment.record_fold(
+            fold_idx,
+            {
+                "characterization": char_m,
+                "generation": gen_m,
+            },
+            {
+                "k_fold": train_cfg["random_seed"],
+                "preprocessing": preprocessing_seed_plan,
+                "training": training_seed_plan,
+            },
+            elapsed,
+        )
 
         if char_m["R2"] > best_global_r2:
             best_global_r2 = char_m["R2"]
             save_model_checkpoint(
                 exp_dir, cfg["checkpoint"], model, x_scaler, y_scaler, pca
+            )
+            experiment.record_checkpoint(
+                fold_idx,
+                best_global_r2,
+                checkpoint_artefact_paths(exp_dir, cfg["checkpoint"]),
             )
 
     print("\n" + "=" * 50)
@@ -416,6 +423,55 @@ def main():
     print_final_stats("CHARACTERIZATION", history_char)
     print_final_stats("GENERATION", history_gen)
     print("=" * 50)
+
+    experiment.complete(
+        {
+            "characterization": summarise_metric_history(history_char),
+            "generation": summarise_metric_history(history_gen),
+        }
+    )
+
+
+def run_unified_training(
+    cfg,
+    exp_dir=None,
+    config_path=None,
+):
+    """Train the unified model and return its isolated experiment directory."""
+    train_cfg = cfg["training"]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    experiment = ExperimentRun.start(
+        stage="unified",
+        config=cfg,
+        config_path=config_path,
+        exp_dir=exp_dir,
+        base_dir="experiments",
+        folds=range(1, train_cfg["n_splits"] + 1),
+        base_seed=train_cfg["random_seed"],
+        device=device,
+        checkpoint_metric="characterization.R2",
+    )
+    try:
+        _execute_unified_training(cfg, experiment, device)
+    except BaseException as exc:
+        experiment.fail(exc)
+        raise
+    return str(experiment.directory)
+
+
+def main():
+    """Parse CLI arguments and run unified model training."""
+    parser = argparse.ArgumentParser(
+        description="ASTRAI unified model training"
+    )
+    parser.add_argument(
+        "--config",
+        default="configs/default.yaml",
+        help="Path to YAML config file (default: configs/default.yaml)",
+    )
+    args = parser.parse_args()
+    cfg = load_config(args.config)
+    run_unified_training(cfg, config_path=args.config)
 
 
 if __name__ == "__main__":

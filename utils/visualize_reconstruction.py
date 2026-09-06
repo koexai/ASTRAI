@@ -15,7 +15,6 @@ Usage::
     python visualize_reconstruction.py --exp experiments/20260306_143000 --top 5
 """
 import argparse
-import os
 import numpy as np
 import torch
 import joblib
@@ -25,6 +24,7 @@ import matplotlib.pyplot as plt
 from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
 from models.unified_model import UnifiedModel
 from utils.augmentation import apply_lsst_pipeline
+from utils.checkpoints import experiment_artefact_path
 from utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
 from scripts.inference import load_data, load_model
 
@@ -64,16 +64,22 @@ def load_from_experiment(exp_dir, cfg, device):
 
     model.load_state_dict(
         torch.load(
-            os.path.join(exp_dir, cfg["checkpoint"]["model"]),
+            experiment_artefact_path(exp_dir, cfg["checkpoint"]["model"]),
             map_location=device,
             weights_only=True,
         )
     )
     model.eval()
 
-    x_scaler = joblib.load(os.path.join(exp_dir, cfg["checkpoint"]["x_scaler"]))
-    y_scaler = joblib.load(os.path.join(exp_dir, cfg["checkpoint"]["y_scaler"]))
-    pca = joblib.load(os.path.join(exp_dir, cfg["checkpoint"]["pca"]))
+    x_scaler = joblib.load(
+        experiment_artefact_path(exp_dir, cfg["checkpoint"]["x_scaler"])
+    )
+    y_scaler = joblib.load(
+        experiment_artefact_path(exp_dir, cfg["checkpoint"]["y_scaler"])
+    )
+    pca = joblib.load(
+        experiment_artefact_path(exp_dir, cfg["checkpoint"]["pca"])
+    )
 
     return model, x_scaler, y_scaler, pca
 

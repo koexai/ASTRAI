@@ -75,19 +75,19 @@ python train.py --config configs/default.yaml
 ```bash
 # Split model
 python inference_split.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS
+    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds
 
 # Unified model
-python inference.py --exp experiments/YYYYMMDD_HHMMSS
+python inference.py --exp experiments/YYYYMMDD_HHMMSS_microseconds
 ```
 
 Save predictions to file:
 
 ```bash
 python inference_split.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS \
+    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
     --output predictions.parquet
 ```
 
@@ -255,9 +255,10 @@ preprocessed/
 `metadata.yaml` records the artefact schema version, UTC start and completion
 times, run status, configured random seed, fold list, Git commit, branch and
 whether the working tree was dirty. It also records the dtype and shape of
-every NumPy artefact produced by a completed run. Schema version 3 records the
-seed-derivation scheme and the effective K-fold, PCA and per-fold augmentation
-seeds.
+every NumPy artefact produced by a completed run. The current schema also
+records the seed-derivation scheme and the effective K-fold, PCA and per-fold
+augmentation seeds. Its version history is summarised under Experiment
+Tracking.
 
 Persisted model arrays use `float32`, while fold indices use `int64`. The cast
 is applied after augmentation, scaling and PCA, so it does not change those
@@ -337,8 +338,8 @@ Single supernova (SN2018hna):
 
 ```bash
 python infer_sn2018hna.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS \
+    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
     --csv SN2018hna.csv \
     --output sn2018hna_inference.pdf
 ```
@@ -347,8 +348,8 @@ Batch inference on all supernovae in the `bol/` directory:
 
 ```bash
 python infer_bol_batch.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS \
+    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
     --bol_dir bol \
     --output_dir plots/batch
 ```
@@ -359,8 +360,8 @@ Per-timestep reconstruction error and best-sample overlay:
 
 ```bash
 python plot_results.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS \
+    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
     --fold 1 \
     --output_dir plots/
 ```
@@ -369,7 +370,7 @@ python plot_results.py \
 
 ```bash
 python visualize_reconstruction.py \
-    --exp experiments/YYYYMMDD_HHMMSS \
+    --exp experiments/YYYYMMDD_HHMMSS_microseconds \
     --top 5
 ```
 
@@ -479,20 +480,51 @@ Set the format in the config under `data.format`.
 
 ## Experiment Tracking
 
-Each training run creates a timestamped directory under `experiments/`:
+Each training invocation creates a new directory under `experiments/`. UTC
+timestamps include microseconds and creation is atomic; if a name still
+collides, a numeric suffix is added. Existing non-empty directories are
+rejected rather than reused, so artefacts from separate runs cannot be mixed
+or overwritten.
 
 ```
 experiments/
-  characterizer/YYYYMMDD_HHMMSS/
+  characterizer/YYYYMMDD_HHMMSS_microseconds/
     best_characterizer.pth       # Model weights (best fold by R2)
     best_char_x_scaler.pkl       # Feature scaler
     best_char_y_scaler.pkl       # Target scaler
     best_char_pca.pkl            # PCA transformer
     code.zip                     # Source code snapshot
-    default_split.yaml           # Config used
-  generator/YYYYMMDD_HHMMSS/
+    config.yaml                  # Effective configuration
+    preprocessing_metadata.yaml  # Input preprocessing provenance
+    metadata.yaml                # Lifecycle, results and artefact manifest
+  generator/YYYYMMDD_HHMMSS_microseconds/
     ...
 ```
+
+The experiment metadata is written when a run starts, after every completed
+fold and whenever the best checkpoint changes. It records the run stage and
+status, UTC times, Git revision and dirty state, effective configuration,
+device, parameter order, dtype contract, selected folds, base and derived
+seeds, per-fold and summary metrics, checkpoint selection and SHA-256 digests
+for every persisted artefact. Failures retain their error and any partial fold
+records. Characterizer and Generator runs started by `main.py` share a
+`pipeline_run_id`, and each snapshots the metadata of its completed
+preprocessing input. Older preprocessing directories without metadata remain
+accepted and are explicitly marked as legacy inputs.
+
+Checkpoint entries in configuration files are artefact names. When an older
+configuration contains a complete historical path, only its final filename is
+resolved inside the selected experiment directory. This preserves legacy
+configuration compatibility while keeping all output within the current run.
+
+### Metadata schema history
+
+| Metadata | Version | Additions |
+| --- | ---: | --- |
+| Preprocessing artefacts | 1 | Run lifecycle, configuration snapshot, fold settings and Git provenance |
+| Preprocessing artefacts | 2 | Array dtype contract and per-array dtype/shape manifest |
+| Preprocessing artefacts | 3 | Seed-derivation scheme and effective preprocessing seed plan |
+| Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
 
 ## Metrics
 
