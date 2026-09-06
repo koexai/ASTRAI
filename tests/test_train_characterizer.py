@@ -157,6 +157,7 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
             "preprocessing": {
                 "pca_components": 1,
                 "n_splits": 2,
+                "random_seed": 42,
             },
             "characterizer": {
                 "model": {

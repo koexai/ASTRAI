@@ -10,7 +10,7 @@ import numpy as np
 from utils import lsst
 
 
-def add_gaussian_noise_slow(x, noise_std):
+def add_gaussian_noise_slow(x, noise_std, rng=None):
     """Add i.i.d. Gaussian noise to each element (fully random, slower).
 
     Parameters
@@ -19,17 +19,22 @@ def add_gaussian_noise_slow(x, noise_std):
         Input batch of shape ``(n_samples, series_length)``.
     noise_std : float
         Standard deviation of the additive noise.
+    rng : numpy.random.Generator, optional
+        Random-number generator. A local entropy-seeded generator is created
+        when omitted.
 
     Returns
     -------
     numpy.ndarray
         Noisy copy of *x* with the same shape.
     """
-    noise = np.random.randn(*x.shape)
+    if rng is None:
+        rng = np.random.default_rng()
+    noise = rng.standard_normal(x.shape)
     return x + noise_std * noise
 
 
-def add_gaussian_noise(x, noise_std):
+def add_gaussian_noise(x, noise_std, rng=None):
     """Add Gaussian noise using a tiled pseudo-random vector (fast variant).
 
     Generates a single random vector of length ``n_samples`` and tiles it
@@ -43,17 +48,28 @@ def add_gaussian_noise(x, noise_std):
         Input batch of shape ``(n_samples, series_length)``.
     noise_std : float
         Standard deviation of the additive noise.
+    rng : numpy.random.Generator, optional
+        Random-number generator. A local entropy-seeded generator is created
+        when omitted.
 
     Returns
     -------
     numpy.ndarray
         Noisy copy of *x* with the same shape.
     """
-    fast_pseudo_rands = np.tile(np.random.randn((len(x))), len(x[0]))
+    if rng is None:
+        rng = np.random.default_rng()
+    fast_pseudo_rands = np.tile(rng.standard_normal(len(x)), len(x[0]))
     return x + noise_std * fast_pseudo_rands.reshape(*x.shape)
 
 
-def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
+def add_exp_gaussian_log_noise(
+    x,
+    sigma=1.0,
+    eps=1e-12,
+    random_state=None,
+    rng=None,
+):
     """
     Apply exp, add Gaussian noise proportional to sqrt(value),
     then take log and return.
@@ -67,7 +83,10 @@ def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
     eps : float
         Small value to avoid log(0).
     random_state : int or None
-        Seed for reproducibility.
+        Seed used to create a local generator for backwards compatibility.
+    rng : numpy.random.Generator or None
+        Explicit random-number generator. Cannot be combined with
+        ``random_state``.
 
     Returns
     -------
@@ -77,8 +96,14 @@ def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
 
     x = np.asarray(x, dtype=float)
 
-    if random_state is not None:
-        np.random.seed(random_state)
+    if random_state is not None and rng is not None:
+        raise ValueError("random_state and rng cannot be supplied together.")
+    if rng is None:
+        rng = (
+            np.random.default_rng()
+            if random_state is None
+            else np.random.RandomState(random_state)
+        )
 
     # Go to linear space
     y = np.exp(x)
@@ -87,7 +112,7 @@ def add_exp_gaussian_log_noise(x, sigma=1.0, eps=1e-12, random_state=None):
     std = sigma * np.sqrt(y)
 
     # Add Gaussian noise
-    noise = np.random.normal(loc=0.0, scale=std, size=y.shape)
+    noise = rng.normal(loc=0.0, scale=std, size=y.shape)
     y_noisy = y + noise
 
     # Avoid negative / zero values
@@ -102,6 +127,7 @@ def apply_lsst_pipeline(
     n_days,
     noise_std,
     samples_per_day=None,
+    rng=None,
 ):
     """Apply noise and LSST cadence degradation to light curves.
 
@@ -122,6 +148,9 @@ def apply_lsst_pipeline(
     samples_per_day : int, optional
         Digital samples per day. Defaults to
         ``lsst.DIG_SAMPLES_X_DAY``.
+    rng : numpy.random.Generator, optional
+        Generator shared by noise and masking. Production callers should
+        supply an explicitly seeded generator.
 
     Returns
     -------
@@ -132,17 +161,22 @@ def apply_lsst_pipeline(
     """
     if samples_per_day is None:
         samples_per_day = lsst.DIG_SAMPLES_X_DAY
+    if rng is None:
+        rng = np.random.default_rng()
 
     augmented = curves_batch.copy()
 
-    augmented = add_gaussian_noise(augmented, noise_std)
+    augmented = add_gaussian_noise(augmented, noise_std, rng=rng)
     retained_mask = np.zeros_like(augmented, dtype=bool)
 
     calendar = np.arange(n_days) / samples_per_day
 
     for i, _ in enumerate(augmented):
-        sun_mask = lsst.sun_masking_np(calendar)
-        cloud_mask = lsst.random_cloud_masking(np.ones_like(calendar))
+        sun_mask = lsst.sun_masking_np(calendar, rng=rng)
+        cloud_mask = lsst.random_cloud_masking(
+            np.ones_like(calendar),
+            rng=rng,
+        )
         combined_mask = (1 - sun_mask) * (1 - cloud_mask)
 
         curve = augmented[i]

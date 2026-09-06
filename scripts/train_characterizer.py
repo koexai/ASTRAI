@@ -32,6 +32,12 @@ from utils.parameter_validation import validate_parameter_names
 from utils.checkpoints import copy_preprocessing_artifacts
 from utils.fold_selection import resolve_fold_indices
 from utils.log_experiments import create_experiment_dir, save_code, save_config
+from utils.reproducibility import (
+    build_training_seed_plan,
+    configure_torch_determinism,
+    make_torch_generator,
+    seed_data_loader_worker,
+)
 
 
 def _load_fold_data(fold_dir):
@@ -212,6 +218,7 @@ def run_characterizer_training(
     )
     n_pca = cfg["preprocessing"]["pca_components"]
     n_splits = cfg["preprocessing"]["n_splits"]
+    base_seed = cfg["preprocessing"]["random_seed"]
     char_cfg = cfg["characterizer"]
 
     held_out_fold = char_cfg["training"].get("held_out_fold")
@@ -254,6 +261,18 @@ def run_characterizer_training(
         x_train_combined = np.vstack([x_train_clean_pca, x_train_aug_pca])
         y_train_combined = np.vstack([y_train_scaled, y_train_scaled])
 
+        seed_plan = build_training_seed_plan(
+            base_seed,
+            "characterizer",
+            fold_idx,
+        )
+        configure_torch_determinism(seed_plan["model"])
+        print(
+            f"    [Fold {fold_idx}] Reproducibility seeds: "
+            f"model={seed_plan['model']}, "
+            f"data_loader={seed_plan['data_loader']}"
+        )
+
         train_ds = TensorDataset(
             torch.FloatTensor(x_train_combined),
             torch.FloatTensor(y_train_combined),
@@ -262,6 +281,8 @@ def run_characterizer_training(
             train_ds,
             batch_size=char_cfg["training"]["batch_size"],
             shuffle=True,
+            generator=make_torch_generator(seed_plan["data_loader"]),
+            worker_init_fn=seed_data_loader_worker,
         )
 
         model = SplitMLPRegressor(

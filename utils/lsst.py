@@ -31,8 +31,6 @@ MOON_PERIOD = 29.53  # Synodic lunar period  [days]
 
 CONSECUTIVE_CLOUDY_DAYS = 2.3  # Mean length of a cloudy spell [days]
 CLOUDY_PROB = 20  # Fraction of time lost to clouds [%]
-CLOUD_SEED = 42  # Default RNG seed for reproducibility
-
 EEPS = 23.44  # Earth axial tilt [degrees]
 LATITUDE_LSST = 30  # Cerro Pachon latitude [degrees]
 PHI = LATITUDE_LSST * ROT_PER_DAY  # Site latitude [radians]
@@ -50,7 +48,12 @@ MAX_OBS_LENGTH = 420  # Maximum observation baseline [days]
 N_SAMPLES = MAX_OBS_LENGTH * DIG_SAMPLES_X_DAY + 1  # Total time-grid size
 
 
-def daylight_hours_np(days, day0=None):
+def _local_rng(rng):
+    """Return an explicit generator without touching NumPy's global state."""
+    return np.random.default_rng() if rng is None else rng
+
+
+def daylight_hours_np(days, day0=None, rng=None):
     """Compute daylight duration for a given array of Julian-like days.
 
     Uses the classical sunrise-equation approximation with the Earth's
@@ -61,7 +64,9 @@ def daylight_hours_np(days, day0=None):
     days : array_like
         Day indices (integer or float).
     day0 : float, optional
-        Phase offset for the solar cycle. Randomized if not provided.
+        Phase offset for the solar cycle. Randomised if not provided.
+    rng : numpy.random.Generator, optional
+        Generator used when ``day0`` is omitted.
 
     Returns
     -------
@@ -71,7 +76,7 @@ def daylight_hours_np(days, day0=None):
     days = np.asarray(days, dtype=np.float64)
 
     if day0 is None:
-        day0 = np.random.rand(1) * SUN_PERIOD
+        day0 = _local_rng(rng).random() * SUN_PERIOD
 
     # Solar declination (radians)
     delta = EEPS * np.sin(2.0 * np.pi * (days - day0) / SUN_PERIOD)
@@ -85,7 +90,7 @@ def daylight_hours_np(days, day0=None):
     return 2.0 * omega0 / 15.0
 
 
-def moon_luminosity_np(days, day0=None):
+def moon_luminosity_np(days, day0=None, rng=None):
     """Compute fractional moon illumination weighted by angular proximity.
 
     The illuminated fraction follows a cosine model of the synodic period.
@@ -97,7 +102,9 @@ def moon_luminosity_np(days, day0=None):
     days : array_like
         Day indices.
     day0 : float, optional
-        Lunar phase offset. Randomized if not provided.
+        Lunar phase offset. Randomised if not provided.
+    rng : numpy.random.Generator, optional
+        Generator used when ``day0`` is omitted.
 
     Returns
     -------
@@ -107,7 +114,7 @@ def moon_luminosity_np(days, day0=None):
     days = np.asarray(days, dtype=np.float64)
 
     if day0 is None:
-        day0 = np.random.rand(1) * MOON_PERIOD
+        day0 = _local_rng(rng).random() * MOON_PERIOD
 
     # Phase angle [0, 2π]
     phase = 2.0 * np.pi * np.mod((days - day0) / MOON_PERIOD, 1.0)
@@ -119,7 +126,7 @@ def moon_luminosity_np(days, day0=None):
     return illuminated_fraction * moon_presence
 
 
-def sun_masking_np(days, day0=None, elev=None):
+def sun_masking_np(days, day0=None, elev=None, rng=None):
     """Return a boolean mask where True indicates solar contamination.
 
     Parameters
@@ -130,6 +137,8 @@ def sun_masking_np(days, day0=None, elev=None):
         Solar phase offset.
     elev : float, optional
         Target elevation above horizon [degrees].
+    rng : numpy.random.Generator, optional
+        Generator used when ``day0`` or ``elev`` is omitted.
 
     Returns
     -------
@@ -138,10 +147,12 @@ def sun_masking_np(days, day0=None, elev=None):
     """
     days = np.asarray(days, dtype=np.float64)
 
+    if day0 is None or elev is None:
+        rng = _local_rng(rng)
     if day0 is None:
-        day0 = np.random.rand(1) * SUN_PERIOD
+        day0 = rng.random() * SUN_PERIOD
     if elev is None:
-        elev = np.random.rand(1) * 60
+        elev = rng.random() * 60
 
     # Phase angle [0, 2π]
     phase = 2.0 * np.pi * np.mod((days - day0) / SUN_PERIOD, 1.0)
@@ -152,7 +163,7 @@ def sun_masking_np(days, day0=None, elev=None):
     return sun_presence
 
 
-def random_cloud_masking(arr, percentage=CLOUDY_PROB, seed=None):
+def random_cloud_masking(arr, percentage=CLOUDY_PROB, seed=None, rng=None):
     """Apply stochastic consecutive-night cloud masking.
 
     Randomly selects block-start indices and zeros out contiguous spans
@@ -166,7 +177,9 @@ def random_cloud_masking(arr, percentage=CLOUDY_PROB, seed=None):
     percentage : int
         Approximate fraction of time-steps to mask [%].
     seed : int, optional
-        RNG seed for reproducibility.
+        Seed used to create a local generator for backwards compatibility.
+    rng : numpy.random.Generator, optional
+        Explicit generator. Cannot be combined with ``seed``.
 
     Returns
     -------
@@ -175,11 +188,11 @@ def random_cloud_masking(arr, percentage=CLOUDY_PROB, seed=None):
     """
     arr = np.asarray(arr, dtype=np.float64)
 
-    if seed is None:
-        seed = np.random.randint(100000, size=1)
     masked_arr = arr.copy()
-
-    rng = np.random.default_rng(seed)
+    if seed is not None and rng is not None:
+        raise ValueError("seed and rng cannot be supplied together.")
+    if rng is None:
+        rng = np.random.default_rng(seed)
 
     consecutive_cloudy_samples = CONSECUTIVE_CLOUDY_DAYS * DIG_SAMPLES_X_DAY
 
@@ -283,13 +296,14 @@ def keep_only_samples_from_lc(lc, sampling):
     return out
 
 
-def get_masks():
+def get_masks(rng=None):
     """Generate the LSST masking components and their combination."""
+    rng = _local_rng(rng)
     cal = np.arange(N_SAMPLES) / DIG_SAMPLES_X_DAY
-    dh = daylight_hours_np(cal)
-    ml = moon_luminosity_np(cal)
-    sm = sun_masking_np(cal)
-    cm = 1 - random_cloud_masking(np.ones_like(cal))
+    dh = daylight_hours_np(cal, rng=rng)
+    ml = moon_luminosity_np(cal, rng=rng)
+    sm = sun_masking_np(cal, rng=rng)
+    cm = 1 - random_cloud_masking(np.ones_like(cal), rng=rng)
     cb = (1 - cm) * ((1 - sm) * (24 - dh - ml * 4))
     return cal, cb, dh, ml, sm, cm
 
@@ -302,7 +316,7 @@ def _setup_axis(ax, label):
     ax.grid(True)
 
 
-def _demo_plot():
+def _demo_plot(seed=42):
     """Plot all LSST masking components and the resulting sampling.
     Demonstrates the interplay of the different masking factors
     and how they combine to produce the final sampling pattern.
@@ -317,7 +331,7 @@ def _demo_plot():
         moon_luminosity,
         sun_masking,
         cloud_masking,
-    ) = get_masks()
+    ) = get_masks(rng=np.random.default_rng(seed))
     sampling = np.int32(get_samples(calendar, combo))
 
     fig, axes = plt.subplots(7, 1, sharex=True, figsize=(5, 7))

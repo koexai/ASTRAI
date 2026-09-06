@@ -255,7 +255,9 @@ preprocessed/
 `metadata.yaml` records the artefact schema version, UTC start and completion
 times, run status, configured random seed, fold list, Git commit, branch and
 whether the working tree was dirty. It also records the dtype and shape of
-every NumPy artefact produced by a completed run.
+every NumPy artefact produced by a completed run. Schema version 3 records the
+seed-derivation scheme and the effective K-fold, PCA and per-fold augmentation
+seeds.
 
 Persisted model arrays use `float32`, while fold indices use `int64`. The cast
 is applied after augmentation, scaling and PCA, so it does not change those
@@ -264,6 +266,40 @@ intermediate calculations; it makes the saved representation match the
 containing legacy `float64` model arrays remain supported: training and
 diagnostic loaders normalise them to `float32` in memory. Failed runs remain
 marked as `failed` and are never silently reused.
+
+### Reproducibility
+
+The configured `random_seed` is the base for independent deterministic
+streams. Stable NumPy `SeedSequence` namespaces derive separate seeds for PCA,
+each fold's augmentation, model initialisation and DataLoader shuffling. The
+K-fold splitter continues to use the configured base seed directly, preserving
+the configured fold assignment.
+
+To select a different set of random streams, change only `random_seed` in the
+configuration file: `preprocessing.random_seed` for the split pipeline or
+`training.random_seed` for the unified model. The value must be an integer from
+0 to 4294967295. All stage-specific and fold-specific seeds are derived
+automatically and should not be configured individually.
+
+Preprocessing and diagnostic augmentation use explicit local NumPy generators
+and do not depend on NumPy's process-global random state. Consequently, two
+preprocessing runs with the same code, configuration and data produce identical
+NumPy artefacts. `plot_results.py` uses its existing `--lsst_seed` option;
+`visualize_reconstruction.py` provides `--lsst-seed`, and derives an independent
+diagnostic stream for each selected sample.
+
+Before every training fold, ASTRAI seeds Python, NumPy and PyTorch, enables
+deterministic PyTorch algorithms, configures deterministic cuDNN behaviour and
+uses an explicitly seeded DataLoader generator. Model and DataLoader seeds are
+derived independently for the Characterizer, Generator and unified model. A
+fold therefore has the same random streams whether it is trained alone or
+after other stages or folds.
+
+These controls target exact repetition with the same source, configuration,
+data, dependency versions, device and execution environment. PyTorch does not
+guarantee bitwise-identical results across releases, platforms or CPU and GPU
+execution. Deterministic algorithms may also run more slowly and will raise an
+error if an operation has no deterministic implementation.
 
 ### Characterizer Training (`train_characterizer.py`)
 
@@ -431,7 +467,7 @@ All hyperparameters are set via YAML config files in `configs/`.
 |---------|---------------|
 | `data` | Same as above |
 | `model` | `pca_components`, `width`, `depth`, `dropout` |
-| `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits` |
+| `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits`, `random_seed` |
 | `loss` | `alpha_char`, `alpha_gen` (loss weights) |
 
 ### Data Formats

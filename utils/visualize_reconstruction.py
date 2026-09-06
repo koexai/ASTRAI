@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
 from models.unified_model import UnifiedModel
 from utils.augmentation import apply_lsst_pipeline
+from utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
 from scripts.inference import load_data, load_model
 
 
@@ -117,6 +118,7 @@ def plot_single(
     noise_std,
     per_sample_char_rmse,
     samples_per_day=4,
+    lsst_seed=42,
 ):
     """Plot the 3-panel visualization for a single sample.
     idx: index of the sample to plot
@@ -132,6 +134,7 @@ def plot_single(
     noise_std: standard deviation of Gaussian noise for augmentation
     per_sample_char_rmse: array of characterization RMSE for each sample
     samples_per_day: number of samples to generate per day for the LSST plot
+    lsst_seed: base seed for the sample-local LSST augmentation
     """
 
     original_curve = x[idx]
@@ -143,6 +146,7 @@ def plot_single(
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
+        rng=make_numpy_rng(derive_diagnostic_seed(lsst_seed, idx)),
     )
     augmented_curve = augmented_curves[0]
 
@@ -270,6 +274,12 @@ def main():
         default=None,
         help="Show the top N samples with lowest reconstruction RMSE",
     )
+    parser.add_argument(
+        "--lsst-seed",
+        type=int,
+        default=42,
+        help="Base seed for reproducible LSST diagnostic augmentation",
+    )
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
@@ -337,6 +347,7 @@ def main():
             noise_std,
             per_sample_char_rmse,
             samples_per_day=samples_per_day,
+            lsst_seed=args.lsst_seed,
         )
 
     plt.show()
