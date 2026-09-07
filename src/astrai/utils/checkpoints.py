@@ -12,9 +12,9 @@ import yaml
 import torch
 import numpy as np
 
-from models.split_mlp import SplitMLPRegressor
-from models.residual_blocks import MLPWithResiduals
-from utils.data import load_raw_data
+from astrai.models.split_mlp import SplitMLPRegressor
+from astrai.models.residual_blocks import MLPWithResiduals
+from astrai.utils.data import load_raw_data
 
 
 def experiment_artefact_path(exp_dir, configured_path):

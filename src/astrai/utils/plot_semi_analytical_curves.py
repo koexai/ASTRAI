@@ -9,7 +9,7 @@ import re
 import numpy as np
 import yaml
 
-from utils.data import load_raw_data
+from astrai.utils.data import load_raw_data
 
 
 COLOURS = (
@@ -586,6 +586,7 @@ def plot_quantile_summary(
 
 def build_parser():
     parser = argparse.ArgumentParser(
+        prog="astrai plot-curves",
         description=(
             "Plot clean curves already present in a configured "
             "semi-analytical dataset."
@@ -604,7 +605,7 @@ def build_parser():
         dest="data_root",
         help=(
             "Base directory for relative data paths "
-            "(default: repository root)"
+            "(default: current working directory)"
         ),
     )
     parser.add_argument(
@@ -662,8 +663,7 @@ def main(argv=None):
     with config_path.open(encoding="utf-8") as stream:
         cfg = yaml.safe_load(stream)
 
-    repository_root = Path(__file__).resolve().parents[1]
-    data_root = Path(args.data_root) if args.data_root else repository_root
+    data_root = Path(args.data_root) if args.data_root else Path.cwd()
     curves, parameters = load_raw_data(
         args.data_path,
         cfg,

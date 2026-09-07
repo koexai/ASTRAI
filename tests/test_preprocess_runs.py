@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import yaml
 
-from scripts import preprocess
+from astrai.cli import preprocess
 
 
 class PreprocessingRunDirectoryTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class PreprocessingRunDirectoryTests(unittest.TestCase):
 
             self.assertEqual(
                 run_dir,
-                base_dir / "20260903_180507_research-config",
+                base_dir.resolve() / "20260903_180507_research-config",
             )
             self.assertTrue(run_dir.is_dir())
 

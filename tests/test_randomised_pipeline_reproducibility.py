@@ -9,9 +9,9 @@ import numpy as np
 import yaml
 from joblib import load
 
-from scripts import preprocess
-from utils import lsst
-from utils.augmentation import (
+from astrai.cli import preprocess
+from astrai.utils import lsst
+from astrai.utils.augmentation import (
     add_gaussian_noise,
     add_exp_gaussian_log_noise,
     apply_lsst_pipeline,

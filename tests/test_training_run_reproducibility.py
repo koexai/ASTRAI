@@ -11,8 +11,8 @@ import yaml
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-from scripts.train_characterizer import run_characterizer_training
-from scripts.train_generator import run_generator_training
+from astrai.cli.train_characterizer import run_characterizer_training
+from astrai.cli.train_generator import run_generator_training
 
 
 class SplitTrainingRunReproducibilityTests(unittest.TestCase):

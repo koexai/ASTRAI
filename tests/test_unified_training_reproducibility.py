@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import numpy as np
 import torch
 
-from scripts import train
+from astrai.cli import train
 
 
 class UnifiedTrainingReproducibilityTests(unittest.TestCase):

@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from utils.augmentation import apply_lsst_pipeline
+from astrai.utils.augmentation import apply_lsst_pipeline
 
 
 class ApplyLsstPipelineTests(unittest.TestCase):
@@ -13,11 +13,11 @@ class ApplyLsstPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "utils.augmentation.lsst.sun_masking_np",
+                "astrai.utils.augmentation.lsst.sun_masking_np",
                 return_value=np.zeros(4),
             ),
             patch(
-                "utils.augmentation.lsst.random_cloud_masking",
+                "astrai.utils.augmentation.lsst.random_cloud_masking",
                 return_value=np.array([0.0, 1.0, 0.0, 1.0]),
             ),
         ):
@@ -45,18 +45,18 @@ class ApplyLsstPipelineTests(unittest.TestCase):
 
         with (
             patch(
-                "utils.augmentation.add_gaussian_noise",
+                "astrai.utils.augmentation.add_gaussian_noise",
                 return_value=noisy_curves,
             ) as additive_noise,
             patch(
-                "utils.augmentation.add_exp_gaussian_log_noise"
+                "astrai.utils.augmentation.add_exp_gaussian_log_noise"
             ) as logarithmic_noise,
             patch(
-                "utils.augmentation.lsst.sun_masking_np",
+                "astrai.utils.augmentation.lsst.sun_masking_np",
                 return_value=np.zeros(3),
             ),
             patch(
-                "utils.augmentation.lsst.random_cloud_masking",
+                "astrai.utils.augmentation.lsst.random_cloud_masking",
                 return_value=np.zeros(3),
             ),
         ):

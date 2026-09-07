@@ -2,11 +2,11 @@ import unittest
 
 import numpy as np
 
-from utils.metrics import (
+from astrai.utils.metrics import (
     METRIC_NAMES,
     compute_parameter_metrics,
 )
-from utils.parameter_validation import validate_parameter_names
+from astrai.utils.parameter_validation import validate_parameter_names
 
 
 class ParameterNameValidationTests(unittest.TestCase):

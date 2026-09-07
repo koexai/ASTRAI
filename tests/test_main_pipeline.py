@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import main as pipeline_main
+from astrai.cli import main as pipeline_main
 
 
 class SplitPipelineTests(unittest.TestCase):
@@ -54,18 +54,18 @@ class SplitPipelineTests(unittest.TestCase):
             run_preprocessing.assert_called_once_with(
                 {},
                 out_dir=str(prep_out),
-                config_path=str(config_path),
+                config_path=str(config_path.resolve()),
             )
             run_characterizer.assert_called_once_with(
                 {},
                 prep_dir=completed_prep,
-                config_path=str(config_path),
+                config_path=str(config_path.resolve()),
                 pipeline_run_id="pipeline-123",
             )
             run_generator.assert_called_once_with(
                 {},
                 prep_dir=completed_prep,
-                config_path=str(config_path),
+                config_path=str(config_path.resolve()),
                 pipeline_run_id="pipeline-123",
             )
 
@@ -106,7 +106,7 @@ class SplitPipelineTests(unittest.TestCase):
             run_preprocessing.assert_called_once_with(
                 {},
                 out_dir=None,
-                config_path=str(config_path),
+                config_path=str(config_path.resolve()),
             )
 
 

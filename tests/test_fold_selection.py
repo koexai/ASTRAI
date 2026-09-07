@@ -1,6 +1,6 @@
 import unittest
 
-from utils.fold_selection import resolve_fold_indices
+from astrai.utils.fold_selection import resolve_fold_indices
 
 
 class ResolveFoldIndicesTests(unittest.TestCase):

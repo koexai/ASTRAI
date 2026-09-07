@@ -6,7 +6,7 @@ All functions operate on NumPy arrays and follow the convention
 """
 import numpy as np
 
-from utils.parameter_validation import validate_parameter_names
+from astrai.utils.parameter_validation import validate_parameter_names
 
 
 METRIC_NAMES = ("RMSE", "RRMSE", "MAE", "R2")

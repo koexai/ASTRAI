@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from utils.data import load_raw_data
+from astrai.utils.data import load_raw_data
 
 
 def make_npy_csv_config(curves_path, params_path, n_days=3):
@@ -48,7 +48,7 @@ class RawDataLoadingTests(unittest.TestCase):
             self.assertEqual(loaded_parameters.dtype, np.dtype("float32"))
 
     def test_existing_loader_keeps_log1p_parameter_contract(self):
-        from utils.checkpoints import load_data
+        from astrai.utils.checkpoints import load_data
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

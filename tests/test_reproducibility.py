@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from utils.reproducibility import (
+from astrai.utils.reproducibility import (
     build_preprocessing_seed_plan,
     build_training_seed_plan,
     configure_torch_determinism,

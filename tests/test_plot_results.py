@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.plot_results import (
+from astrai.utils.plot_results import (
     resolve_diagnostic_fold,
     save_reconstruction_error_csv,
     save_sample_diagnostic_csv,

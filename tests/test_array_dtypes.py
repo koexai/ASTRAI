@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.array_dtypes import (
+from astrai.utils.array_dtypes import (
     INDEX_ARRAY_DTYPE,
     MODEL_ARRAY_DTYPE,
     as_index_array,

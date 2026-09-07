@@ -7,7 +7,7 @@ masked epochs.  This encourages the network to generalize across
 observational conditions rather than overfitting to uniform-cadence data.
 """
 import numpy as np
-from utils import lsst
+from astrai.utils import lsst
 
 
 def add_gaussian_noise_slow(x, noise_std, rng=None):

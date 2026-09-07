@@ -1,0 +1,43 @@
+data:
+  format: parquet
+  path: data/dataset_preprocessed.parquet
+  n_days: 1601
+  n_params: 7
+  param_names: [Raggio, Massa, Energia, Nickel, Mcsm, Rcsm, Slope]
+  samples_per_day: 4
+
+training:
+  batch_size: 4096
+  epochs: 1000
+  learning_rate: 0.001
+  n_splits: 2
+  # Single base seed; stage-specific and fold-specific seeds are derived.
+  random_seed: 42
+
+model:
+  pca_components: 32
+  width: 512
+  depth: 10
+  dropout: 0.1
+
+loss:
+  alpha_char: 1.0
+  alpha_gen: 1.0
+
+augmentation:
+  noise_std: 0.05
+
+visualisation:
+  y_label: '$\log_{10}(L_{\rm bol}\,[{\rm erg}\,{\rm s}^{-1}])$'
+  quantile_summary:
+    output_name: clean_light_curves_7par_quantiles
+    quantile_ranges:
+      Lower 20%: [0.0, 0.2]
+      Central 20%: [0.4, 0.6]
+      Upper 20%: [0.8, 1.0]
+
+checkpoint:
+  model: best_split_mlp_model.pth
+  x_scaler: best_split_mlp_x_scaler.pkl
+  y_scaler: best_split_mlp_y_scaler.pkl
+  pca: best_split_mlp_pca.pkl
