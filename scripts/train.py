@@ -322,6 +322,7 @@ def _execute_unified_training(cfg, experiment, device):
         )
 
         configure_torch_determinism(training_seed_plan["model"])
+        experiment.record_execution_environment(device=device)
 
         train_ds = TensorDataset(
             torch.FloatTensor(x_train_combined),

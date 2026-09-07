@@ -164,7 +164,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 first_metadata["preprocessing_artefact_schema_version"],
-                3,
+                4,
             )
             self.assertEqual(
                 load(first_dir / "pca.pkl").random_state,

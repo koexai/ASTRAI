@@ -19,9 +19,13 @@ import numpy as np
 import yaml
 
 from utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
+from utils.runtime_environment import (
+    capture_execution_environment,
+    capture_runtime_environment,
+)
 
 
-EXPERIMENT_METADATA_VERSION = 1
+EXPERIMENT_METADATA_VERSION = 2
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -264,6 +268,7 @@ class ExperimentRun:
 
         started_at = _utc_now()
         parameter_names = config.get("data", {}).get("param_names")
+        environment = capture_runtime_environment(device=device)
         metadata = {
             "experiment_metadata_version": EXPERIMENT_METADATA_VERSION,
             "run": {
@@ -297,8 +302,11 @@ class ExperimentRun:
             "execution": {
                 "device": None if device is None else str(device),
                 "folds": None if folds is None else list(folds),
-                "deterministic_algorithms": True,
+                "deterministic_algorithms": environment["pytorch"][
+                    "deterministic_algorithms"
+                ]["enabled"],
             },
+            "environment": environment,
             "reproducibility": {
                 "base_seed": base_seed,
                 "fold_seed_plans": {},
@@ -435,6 +443,17 @@ class ExperimentRun:
                 "elapsed_seconds": float(elapsed_seconds),
                 "metrics": _normalise_metadata(metrics),
             }
+        )
+        self._write_metadata()
+
+    def record_execution_environment(self, device=None):
+        """Refresh settings configured during the current training process."""
+        execution_environment = capture_execution_environment(device=device)
+        self.metadata["environment"].update(execution_environment)
+        self.metadata["execution"]["deterministic_algorithms"] = (
+            execution_environment["pytorch"]["deterministic_algorithms"][
+                "enabled"
+            ]
         )
         self._write_metadata()
 

@@ -3,6 +3,7 @@ import unittest
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import yaml
@@ -151,12 +152,19 @@ class ExperimentRunTests(unittest.TestCase):
                 (run_dir / "config.yaml").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(metadata["experiment_metadata_version"], 1)
+        self.assertEqual(metadata["experiment_metadata_version"], 2)
         self.assertEqual(metadata["run"]["status"], "completed")
         self.assertEqual(metadata["run"]["stage"], "characterizer")
         self.assertEqual(metadata["run"]["pipeline_run_id"], "pipeline-123")
         self.assertEqual(metadata["config"]["snapshot"], "config.yaml")
         self.assertEqual(metadata["source"]["snapshot"], "code.zip")
+        self.assertEqual(metadata["environment"]["schema_version"], 1)
+        self.assertEqual(
+            metadata["execution"]["deterministic_algorithms"],
+            metadata["environment"]["pytorch"][
+                "deterministic_algorithms"
+            ]["enabled"],
+        )
         self.assertEqual(
             config_snapshot,
             {
@@ -242,6 +250,43 @@ class ExperimentRunTests(unittest.TestCase):
 
         self.assertEqual(metadata["run"]["status"], "failed")
         self.assertEqual(metadata["run"]["error_type"], "ValueError")
+
+    def test_refreshes_effective_execution_environment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "experiment"
+            run = ExperimentRun.start(
+                stage="unified",
+                config={},
+                exp_dir=run_dir,
+                repository_root=self._source_root(root),
+            )
+            execution_environment = {
+                "pytorch": {
+                    "deterministic_algorithms": {"enabled": True},
+                },
+                "environment_variables": {
+                    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+                },
+            }
+
+            with patch(
+                "utils.log_experiments.capture_execution_environment",
+                return_value=execution_environment,
+            ):
+                run.record_execution_environment(device="cpu")
+
+            metadata = self._metadata(run_dir)
+
+        self.assertTrue(metadata["execution"]["deterministic_algorithms"])
+        self.assertEqual(
+            metadata["environment"]["pytorch"],
+            execution_environment["pytorch"],
+        )
+        self.assertEqual(
+            metadata["environment"]["environment_variables"],
+            execution_environment["environment_variables"],
+        )
 
 
 if __name__ == "__main__":
