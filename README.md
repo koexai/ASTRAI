@@ -11,8 +11,12 @@ PNRR Project - Developed as part of the National Recovery and Resilience Plan at
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+python -m pip install --editable .
 ```
+
+Use `python -m pip install .` for a standard installation. Both modes install
+the `astrai` command; no `PYTHONPATH` changes are required. Runtime dependency
+minimums are declared identically in `pyproject.toml` and `requirements.txt`.
 
 For GPU support, install PyTorch with CUDA following the [official instructions](https://pytorch.org/get-started/locally/).
 
@@ -35,11 +39,9 @@ Run the same checks locally from the repository root:
 
 ```bash
 python -m pip check
-python -m compileall -q models scripts utils tests
-
-PYTHONPATH="$PWD:$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
-MPLBACKEND=Agg \
-python -m unittest discover -s tests -v
+python -m compileall -q src scripts tests
+MPLBACKEND=Agg python -m unittest discover -s tests -v
+astrai --help
 ```
 
 ## Quick Start
@@ -49,7 +51,7 @@ python -m unittest discover -s tests -v
 Run preprocessing, characterizer, and generator training in sequence:
 
 ```bash
-python main.py --config configs/default_split.yaml
+astrai pipeline --config configs/default_split.yaml
 ```
 
 Preprocessing is written to a new timestamped run directory and that exact
@@ -60,13 +62,13 @@ is rejected.
 This is equivalent to running the three stages separately:
 
 ```bash
-python preprocess.py --config configs/default_split.yaml
+astrai preprocess --config configs/default_split.yaml
 
 # Use the directory printed by preprocessing:
-python train_characterizer.py \
+astrai train-characterizer \
   --config configs/default_split.yaml \
   --prep preprocessed/YYYYMMDD_HHMMSS_default_split
-python train_generator.py \
+astrai train-generator \
   --config configs/default_split.yaml \
   --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
@@ -76,29 +78,55 @@ python train_generator.py \
 Single model with both branches trained jointly:
 
 ```bash
-python train.py --config configs/default.yaml
+astrai train --config configs/default.yaml
 ```
 
 ### Inference
 
 ```bash
 # Split model
-python inference_split.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds
+astrai infer-split \
+    --exp-char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp-gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds
 
 # Unified model
-python inference.py --exp experiments/YYYYMMDD_HHMMSS_microseconds
+astrai infer --exp experiments/YYYYMMDD_HHMMSS_microseconds
 ```
 
 Save predictions to file:
 
 ```bash
-python inference_split.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
+astrai infer-split \
+    --exp-char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp-gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
     --output predictions.parquet
 ```
+
+### CLI contract
+
+`astrai --help` lists every supported command and each command provides its
+own `--help`. Paths supplied by users are resolved from the current working
+directory; packaged default YAML files are resolved from the installation and
+therefore work outside the source checkout. Generated outputs are written only
+to the explicit destination or to the documented current-directory default.
+
+| Command | Required external inputs | Outputs |
+| --- | --- | --- |
+| `pipeline` | dataset from config | preprocessing and two experiment runs |
+| `preprocess` | dataset from config | isolated preprocessing run |
+| `train`, `train-characterizer`, `train-generator` | data/preprocessing and config | isolated experiment run |
+| `infer`, `infer-split` | checkpoints and input dataset | terminal metrics; optional predictions Parquet |
+| `infer-real single` | bol file, name, two experiment runs, explosion epoch or catalogue | one PDF |
+| `infer-real batch` | bol directory, catalogue, two experiment runs | one PDF per object and a parameter CSV |
+| `plot-results`, `plot-curves`, `visualize-reconstruction` | command-specific data/artefacts | plots in the requested directory |
+| `benchmark-inference`, `benchmark-generation` | checkpoints, data and config | terminal timing report |
+
+Successful commands return exit status `0`. Command-line usage errors,
+including unknown commands or missing required options, return `2` through
+`argparse`; missing files, invalid data and runtime/model errors return a
+non-zero status and include the failure on standard error. Historical modules
+under `scripts/` remain as thin source-checkout wrappers, but the `astrai`
+commands above are canonical.
 
 ## Performance Benchmarks
 
@@ -111,7 +139,7 @@ reproduced.
 
 ### End-to-End Inference Benchmark
 
-The `scripts/benchmark_end_to_end_inference.py` script measures warm inference
+The `astrai benchmark-inference` command measures warm inference
 latency for one light curve through the complete pipeline:
 
 ```text
@@ -126,7 +154,7 @@ model initialisation are excluded.
 Run the following command from the repository root:
 
 ```bash
-/usr/bin/time -p python -m scripts.benchmark_end_to_end_inference \
+/usr/bin/time -p astrai benchmark-inference \
   --config path/to/config.yaml \
   --exp-char path/to/characterizer-experiment \
   --exp-gen path/to/generator-experiment \
@@ -168,7 +196,7 @@ in memory.
 
 ### LCGen Batch Generation Benchmark
 
-The `scripts/benchmark_lcgen_generation.py` script measures warm, vectorised
+The `astrai benchmark-generation` command measures warm, vectorised
 generation throughput:
 
 ```text
@@ -181,7 +209,7 @@ are excluded from the measurement.
 Run the following command from the repository root:
 
 ```bash
-/usr/bin/time -p python -u -m scripts.benchmark_lcgen_generation \
+/usr/bin/time -p astrai benchmark-generation \
   --config path/to/config.yaml \
   --exp-gen path/to/generator-experiment \
   --device cpu \
@@ -223,14 +251,14 @@ remain the primary results.
 
 ## Pipeline Details
 
-### Preprocessing (`preprocess.py`)
+### Preprocessing (`astrai preprocess`)
 
 Fits scalers and PCA once on the full dataset, then creates K-Fold splits with
 LSST-augmented training data. Each invocation creates an isolated run; it does
 not write directly into a shared `preprocessed/` directory.
 
 ```bash
-python preprocess.py --config configs/default_split.yaml
+astrai preprocess --config configs/default_split.yaml
 ```
 
 The default destination is
@@ -294,8 +322,8 @@ automatically and should not be configured individually.
 Preprocessing and diagnostic augmentation use explicit local NumPy generators
 and do not depend on NumPy's process-global random state. Consequently, two
 preprocessing runs with the same code, configuration and data produce identical
-NumPy artefacts. `plot_results.py` uses its existing `--lsst_seed` option;
-`visualize_reconstruction.py` provides `--lsst-seed`, and derives an independent
+NumPy artefacts. `astrai plot-results` accepts `--lsst-seed` (and the legacy
+spelling `--lsst_seed`); `astrai visualize-reconstruction` derives an independent
 diagnostic stream for each selected sample.
 
 Before every training fold, ASTRAI seeds Python, NumPy and PyTorch, enables
@@ -311,12 +339,12 @@ guarantee bitwise-identical results across releases, platforms or CPU and GPU
 execution. Deterministic algorithms may also run more slowly and will raise an
 error if an operation has no deterministic implementation.
 
-### Characterizer Training (`train_characterizer.py`)
+### Characterizer Training (`astrai train-characterizer`)
 
 Trains a `SplitMLPRegressor` (one independent MLP per physical parameter) on PCA-compressed curves.
 
 ```bash
-python train_characterizer.py \
+astrai train-characterizer \
   --config configs/default_split.yaml \
   --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
@@ -331,36 +359,47 @@ The per-parameter and aggregate values use the same evaluation-space targets
 after reversing the target standardisation. This reporting does not introduce
 an additional target transformation.
 
-### Generator Training (`train_generator.py`)
+### Generator Training (`astrai train-generator`)
 
 Trains a `MLPWithResiduals` to reconstruct PCA-compressed curves from physical parameters.
 
 ```bash
-python train_generator.py \
+astrai train-generator \
   --config configs/default_split.yaml \
   --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
 
 ### Inference on Real Supernovae
 
-Single supernova (SN2018hna):
+The generic real-data command accepts the observed `bol` text format used by
+the existing batch pipeline. Single and batch modes execute the same `L+BB`
+loading, interpolation, missing-edge filling, scaling/PCA, characterization
+and generation code.
+
+For SN2018HNA, the catalogue explosion epoch is `58411.3`. The numeric epoch
+and current unit convention are preserved as-is; no discovery epoch or unit
+conversion is substituted.
 
 ```bash
-python infer_sn2018hna.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
-    --csv SN2018hna.csv \
-    --output sn2018hna_inference.pdf
+astrai infer-real single \
+  --name SN2018HNA \
+  --bol-file data/real/87Alike_bolometric/bol_SN2018HNA_UBVRI.txt \
+  --info data/real/metadata/info_87Alike.txt \
+  --exp-char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+  --exp-gen experiments/generator/YYYYMMDD_HHMMSS_microseconds \
+  --output plots/SN2018HNA_inference.pdf
 ```
 
-Batch inference on all supernovae in the `bol/` directory:
+`--explosion-epoch 58411.3` may be supplied instead of looking the value up
+in `--info`. Batch mode processes every catalogue entry with a matching file:
 
 ```bash
-python infer_bol_batch.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
-    --bol_dir bol \
-    --output_dir plots/batch
+astrai infer-real batch \
+  --exp-char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+  --exp-gen experiments/generator/YYYYMMDD_HHMMSS_microseconds \
+  --bol-dir data/real/87Alike_bolometric \
+  --info data/real/metadata/info_87Alike.txt \
+  --output-dir plots/batch
 ```
 
 ### Visualization
@@ -368,17 +407,17 @@ python infer_bol_batch.py \
 Per-timestep reconstruction error and best-sample overlay:
 
 ```bash
-python plot_results.py \
-    --exp_char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
-    --exp_gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
+astrai plot-results \
+    --exp-char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
+    --exp-gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
     --fold 1 \
-    --output_dir plots/
+    --output-dir plots/
 ```
 
 3-panel reconstruction view for the unified model (original vs augmented vs reconstructed):
 
 ```bash
-python visualize_reconstruction.py \
+astrai visualize-reconstruction \
     --exp experiments/YYYYMMDD_HHMMSS_microseconds \
     --top 5
 ```
@@ -387,16 +426,16 @@ Options: `--index N` for a specific sample, `--top N` for the N best by characte
 
 ### Semi-analytical Model Curves
 
-`utils.plot_semi_analytical_curves` compares clean curves already stored in a
+`astrai plot-curves` compares clean curves already stored in a
 configured semi-analytical dataset. It does not run the semi-analytical model
 and does not use PPReg, LCGen or the augmentation pipeline. Relative dataset
-paths are resolved from the repository root, so the command can be run from a
-different working directory as well.
+paths are resolved from the current working directory, or from the explicit
+`--data-root`. This keeps user data independent of the installation location.
 
 The four-parameter configuration contains an exact one-at-a-time comparison:
 
 ```bash
-python -m utils.plot_semi_analytical_curves \
+astrai plot-curves \
   --config configs/4par.yaml \
   --output-dir plots/semi-analytical/4par
 ```
@@ -423,7 +462,7 @@ semi-analytical model curve or an uncertainty interval. Each legend reports the
 actual parameter range and number of rows contributing to the median:
 
 ```bash
-python -m utils.plot_semi_analytical_curves \
+astrai plot-curves \
   --config configs/default.yaml \
   --output-dir plots/semi-analytical/7par
 ```
@@ -432,7 +471,7 @@ Any configured dataset can also be inspected by selecting one or more existing
 rows. This mode overlays complete sample curves in a single plot:
 
 ```bash
-python -m utils.plot_semi_analytical_curves \
+astrai plot-curves \
   --config configs/default.yaml \
   --output-dir plots/semi-analytical/7par-selected \
   --index 0 \
@@ -444,7 +483,7 @@ Rows may instead be selected by parameter values. A partial selection is
 accepted only when it identifies one unique row:
 
 ```bash
-python -m utils.plot_semi_analytical_curves \
+astrai plot-curves \
   --config configs/4par.yaml \
   --output-dir plots/semi-analytical/selected \
   --parameters 'Radius=13,Mass=20,Energy=4.5,Nichel=0.05'
@@ -519,10 +558,17 @@ and SHA-256 digests for every persisted artefact. The runtime snapshot includes
 Python, the operating-system platform, installed distribution versions,
 PyTorch backends, thread counts and effective deterministic settings. Failures
 retain their error and any partial fold records. Characterizer and Generator
-runs started by `main.py` share a
+runs started by `astrai pipeline` share a
 `pipeline_run_id`, and each snapshots the metadata of its completed
 preprocessing input. Older preprocessing directories without metadata remain
 accepted and are explicitly marked as legacy inputs.
+
+Source provenance follows the installed `astrai` package location rather than
+the process working directory. An editable checkout records that checkout's
+Git revision and archives its Python sources. A standard installation archives
+the installed package sources and leaves Git fields null instead of
+attributing the run to an unrelated repository from which the command happens
+to be launched.
 
 Checkpoint entries in configuration files are artefact names. When an older
 configuration contains a complete historical path, only its final filename is
