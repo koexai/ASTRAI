@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from utils.plot_semi_analytical_curves import (
+from astrai.utils.plot_semi_analytical_curves import (
     build_time_axis,
     find_unique_sample,
     parse_parameter_selection,

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from utils.checkpoints import (
+from astrai.utils.checkpoints import (
     checkpoint_artefact_paths,
     experiment_artefact_path,
 )

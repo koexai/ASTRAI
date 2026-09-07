@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import yaml
 
-from utils.log_experiments import (
+from astrai.utils.log_experiments import (
     ExperimentRun,
     create_experiment_dir,
     create_pipeline_run_id,
@@ -271,7 +271,7 @@ class ExperimentRunTests(unittest.TestCase):
             }
 
             with patch(
-                "utils.log_experiments.capture_execution_environment",
+                "astrai.utils.log_experiments.capture_execution_environment",
                 return_value=execution_environment,
             ):
                 run.record_execution_environment(device="cpu")

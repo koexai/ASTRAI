@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import yaml
 
-from scripts import preprocess
+from astrai.cli import preprocess
 
 
 class PreprocessingRunDirectoryTests(unittest.TestCase):

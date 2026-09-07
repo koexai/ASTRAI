@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from utils import runtime_environment
+from astrai.utils import runtime_environment
 
 
 class _Distribution:

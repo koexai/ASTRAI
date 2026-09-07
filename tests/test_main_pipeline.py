@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import main as pipeline_main
+from astrai.cli import main as pipeline_main
 
 
 class SplitPipelineTests(unittest.TestCase):

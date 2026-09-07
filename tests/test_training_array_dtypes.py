@@ -1,4 +1,3 @@
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,12 +5,7 @@ from pathlib import Path
 import numpy as np
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import train_characterizer
-import train_generator
+from astrai.cli import train_characterizer, train_generator
 
 
 class LegacyTrainingArrayTests(unittest.TestCase):
