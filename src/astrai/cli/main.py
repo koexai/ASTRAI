@@ -11,12 +11,12 @@ Usage::
     astrai pipeline --config configs/default_split.yaml --prep-out path/to/run
 """
 import argparse
-import yaml
 
 from astrai.cli.preprocess import run_preprocessing
 from astrai.cli.train_characterizer import run_characterizer_training
 from astrai.cli.train_generator import run_generator_training
 from astrai.paths import resolve_config_path
+from astrai.utils.configuration import load_config
 from astrai.utils.log_experiments import create_pipeline_run_id
 
 
@@ -48,8 +48,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default_split.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
     pipeline_run_id = create_pipeline_run_id()
 
     # 1. Preprocessing (PCA + scalers fitted once, shared by both models)

@@ -7,9 +7,9 @@ from pathlib import Path
 import re
 
 import numpy as np
-import yaml
 
 from astrai.utils.data import load_raw_data
+from astrai.utils.configuration import load_config
 
 
 COLOURS = (
@@ -660,8 +660,7 @@ def main(argv=None):
         raise ValueError("--dpi must be greater than zero")
 
     config_path = Path(args.config)
-    with config_path.open(encoding="utf-8") as stream:
-        cfg = yaml.safe_load(stream)
+    cfg = load_config(config_path)
 
     data_root = Path(args.data_root) if args.data_root else Path.cwd()
     curves, parameters = load_raw_data(

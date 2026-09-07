@@ -245,7 +245,7 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
             ),
             mock.patch.object(
                 train_characterizer,
-                "SplitMLPRegressor",
+                "build_characterizer",
                 return_value=TrainingModel(),
             ),
             mock.patch.object(train_characterizer, "TensorDataset"),

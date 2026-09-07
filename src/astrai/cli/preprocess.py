@@ -21,7 +21,6 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import yaml
 from sklearn.decomposition import PCA
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
@@ -34,6 +33,7 @@ from astrai.utils.array_dtypes import (
     as_model_array,
 )
 from astrai.utils.checkpoints import load_data
+from astrai.utils.configuration import load_config
 from astrai.utils.log_experiments import save_code
 from astrai.utils.reproducibility import (
     build_preprocessing_seed_plan,
@@ -498,8 +498,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default_split.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
 
     run_preprocessing(
         cfg,

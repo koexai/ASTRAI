@@ -8,12 +8,15 @@ import os
 import shutil
 from pathlib import Path
 import joblib
-import yaml
 import torch
 import numpy as np
 
-from astrai.models.split_mlp import SplitMLPRegressor
-from astrai.models.residual_blocks import MLPWithResiduals
+from astrai.models.factories import (
+    build_characterizer,
+    build_generator,
+    build_unified_model,
+)
+from astrai.utils.configuration import load_config
 from astrai.utils.data import load_raw_data
 
 
@@ -41,13 +44,14 @@ def checkpoint_artefact_paths(exp_dir, cfg_checkpoint):
     }
 
 
-def load_config(path):
-    """Load YAML configuration from disk."""
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def _checkpoint_path(exp_dir, configured_path):
+    """Resolve a checkpoint path with optional experiment containment."""
+    if exp_dir is None:
+        return Path(configured_path).expanduser()
+    return experiment_artefact_path(exp_dir, configured_path)
 
 
-def _load_scalers_and_pca(ckpt, exp_dir):
+def _load_scalers_and_pca(ckpt, exp_dir=None):
     """Load scalers and PCA from disk given checkpoint info.
     ckpt: dict with keys "x_scaler", "y_scaler", "pca" containing filenames
     exp_dir: directory where the checkpoint files are located
@@ -57,12 +61,12 @@ def _load_scalers_and_pca(ckpt, exp_dir):
     pca: the loaded PCA transformer
     """
     x_scaler = joblib.load(
-        experiment_artefact_path(exp_dir, ckpt["x_scaler"])
+        _checkpoint_path(exp_dir, ckpt["x_scaler"])
     )
     y_scaler = joblib.load(
-        experiment_artefact_path(exp_dir, ckpt["y_scaler"])
+        _checkpoint_path(exp_dir, ckpt["y_scaler"])
     )
-    pca = joblib.load(experiment_artefact_path(exp_dir, ckpt["pca"]))
+    pca = joblib.load(_checkpoint_path(exp_dir, ckpt["pca"]))
     return x_scaler, y_scaler, pca
 
 
@@ -78,21 +82,12 @@ def load_characterizer(cfg, device, exp_dir):
     pca: the loaded PCA transformer
     """
     char_cfg = cfg["characterizer"]
-    n_pca = cfg["preprocessing"]["pca_components"]
-    n_params = cfg["data"]["n_params"]
-
-    model = SplitMLPRegressor(
-        input_dim=n_pca,
-        width=char_cfg["model"]["width"],
-        num_params=n_params,
-        depth=char_cfg["model"]["depth"],
-        dropout=char_cfg["model"]["dropout"],
-    ).to(device)
+    model = build_characterizer(cfg).to(device)
 
     ckpt = char_cfg["checkpoint"]
     model.load_state_dict(
         torch.load(
-            experiment_artefact_path(exp_dir, ckpt["model"]),
+            _checkpoint_path(exp_dir, ckpt["model"]),
             map_location=device,
             weights_only=True,
         )
@@ -115,21 +110,29 @@ def load_generator(cfg, device, exp_dir):
     pca: the loaded PCA transformer
     """
     gen_cfg = cfg["generator"]
-    n_pca = cfg["preprocessing"]["pca_components"]
-    n_params = cfg["data"]["n_params"]
-
-    model = MLPWithResiduals(
-        input_dim=n_params,
-        width=gen_cfg["model"]["width"],
-        out_dim=n_pca,
-        depth=gen_cfg["model"]["depth"],
-        dropout=gen_cfg["model"]["dropout"],
-    ).to(device)
+    model = build_generator(cfg).to(device)
 
     ckpt = gen_cfg["checkpoint"]
     model.load_state_dict(
         torch.load(
-            experiment_artefact_path(exp_dir, ckpt["model"]),
+            _checkpoint_path(exp_dir, ckpt["model"]),
+            map_location=device,
+            weights_only=True,
+        )
+    )
+    model.eval()
+
+    x_scaler, y_scaler, pca = _load_scalers_and_pca(ckpt, exp_dir)
+    return model, x_scaler, y_scaler, pca
+
+
+def load_unified_model(cfg, device, exp_dir=None):
+    """Load a unified model and its preprocessing artefacts."""
+    model = build_unified_model(cfg).to(device)
+    ckpt = cfg["checkpoint"]
+    model.load_state_dict(
+        torch.load(
+            _checkpoint_path(exp_dir, ckpt["model"]),
             map_location=device,
             weights_only=True,
         )

@@ -16,13 +16,12 @@ import time
 import joblib
 import numpy as np
 import torch
-import yaml
 
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from astrai.cli.train import print_final_stats
-from astrai.models.split_mlp import SplitMLPRegressor
+from astrai.models.factories import build_characterizer
 from astrai.utils.array_dtypes import load_model_array
 from astrai.utils.metrics import (
     METRIC_NAMES,
@@ -34,6 +33,7 @@ from astrai.utils.checkpoints import (
     copy_preprocessing_artifacts,
     experiment_artefact_path,
 )
+from astrai.utils.configuration import load_config
 from astrai.utils.fold_selection import resolve_fold_indices
 from astrai.utils.log_experiments import ExperimentRun, summarise_metric_history
 from astrai.utils.reproducibility import (
@@ -318,13 +318,7 @@ def run_characterizer_training(
                 worker_init_fn=seed_data_loader_worker,
             )
 
-            model = SplitMLPRegressor(
-                input_dim=n_pca,
-                width=char_cfg["model"]["width"],
-                num_params=n_params,
-                depth=char_cfg["model"]["depth"],
-                dropout=char_cfg["model"]["dropout"],
-            ).to(device)
+            model = build_characterizer(cfg).to(device)
 
             optimizer = torch.optim.Adam(
                 model.parameters(), lr=char_cfg["training"]["learning_rate"]
@@ -441,8 +435,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default_split.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
 
     run_characterizer_training(
         cfg,

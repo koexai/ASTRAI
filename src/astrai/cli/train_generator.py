@@ -16,13 +16,12 @@ import time
 import joblib
 import numpy as np
 import torch
-import yaml
 
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from astrai.cli.train import print_final_stats
-from astrai.models.split_mlp import MLPWithResiduals
+from astrai.models.factories import build_generator
 from astrai.utils.array_dtypes import load_model_array
 from astrai.utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from astrai.utils.checkpoints import (
@@ -30,6 +29,7 @@ from astrai.utils.checkpoints import (
     copy_preprocessing_artifacts,
     experiment_artefact_path,
 )
+from astrai.utils.configuration import load_config
 from astrai.utils.fold_selection import resolve_fold_indices
 from astrai.utils.log_experiments import ExperimentRun, summarise_metric_history
 from astrai.utils.reproducibility import (
@@ -255,13 +255,7 @@ def run_generator_training(
                 worker_init_fn=seed_data_loader_worker,
             )
 
-            model = MLPWithResiduals(
-                input_dim=n_params,
-                width=gen_cfg["model"]["width"],
-                out_dim=n_pca,
-                depth=gen_cfg["model"]["depth"],
-                dropout=gen_cfg["model"]["dropout"],
-            ).to(device)
+            model = build_generator(cfg).to(device)
 
             optimizer = torch.optim.Adam(
                 model.parameters(), lr=gen_cfg["training"]["learning_rate"]
@@ -361,8 +355,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default_split.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
 
     run_generator_training(
         cfg,

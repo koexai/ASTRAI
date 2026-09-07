@@ -28,8 +28,7 @@ from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
-from astrai.models.split_mlp import SplitMLPRegressor, MLPWithResiduals
-from astrai.models.unified_model import UnifiedModel
+from astrai.models.factories import build_unified_model
 from astrai.utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from astrai.utils.checkpoints import (
     checkpoint_artefact_paths,
@@ -337,21 +336,7 @@ def _execute_unified_training(cfg, experiment, device):
             worker_init_fn=seed_data_loader_worker,
         )
 
-        regressor = SplitMLPRegressor(
-            input_dim=n_pca,
-            width=model_cfg["width"],
-            num_params=n_params,
-            depth=model_cfg["depth"],
-            dropout=model_cfg["dropout"],
-        )
-        generator = MLPWithResiduals(
-            input_dim=n_params,
-            width=model_cfg["width"],
-            out_dim=n_pca,
-            depth=model_cfg["depth"],
-            dropout=model_cfg["dropout"],
-        )
-        model = UnifiedModel(regressor, generator).to(device)
+        model = build_unified_model(cfg).to(device)
 
         optimizer = torch.optim.Adam(
             model.parameters(), lr=train_cfg["learning_rate"]
