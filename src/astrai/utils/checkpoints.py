@@ -212,6 +212,16 @@ def save_model_checkpoint(
     )
 
 
+def save_split_checkpoint(exp_dir, cfg_checkpoint, model, prep_dir):
+    """Save one split model and copy its shared preprocessing artefacts."""
+    torch.save(
+        model.state_dict(),
+        experiment_artefact_path(exp_dir, cfg_checkpoint["model"]),
+    )
+    copy_preprocessing_artifacts(prep_dir, exp_dir, cfg_checkpoint)
+    return checkpoint_artefact_paths(exp_dir, cfg_checkpoint)
+
+
 def copy_preprocessing_artifacts(prep_dir, exp_dir, cfg_checkpoint):
     """Copy scaler and PCA from preprocessing directory to experiment directory.
 
