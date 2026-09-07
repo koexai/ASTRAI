@@ -189,6 +189,40 @@ class ExperimentRunTests(unittest.TestCase):
             },
         )
 
+    def test_checkpoint_accepts_symlinked_experiment_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            physical_root = root / "physical"
+            physical_root.mkdir()
+            alias_root = root / "alias"
+
+            try:
+                alias_root.symlink_to(
+                    physical_root,
+                    target_is_directory=True,
+                )
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"Symbolic links are unavailable: {exc}")
+
+            run_dir = alias_root / "experiment"
+            run = ExperimentRun.start(
+                stage="characterizer",
+                config={},
+                exp_dir=run_dir,
+                repository_root=self._source_root(root),
+            )
+
+            checkpoint = run_dir / "model.pth"
+            checkpoint.write_bytes(b"weights")
+            run.record_checkpoint(1, 0.75, {"model": checkpoint})
+
+            metadata = self._metadata(run.directory)
+
+        self.assertEqual(
+            metadata["checkpoint"]["files"]["model"]["path"],
+            "model.pth",
+        )
+
     def test_failed_run_preserves_failure_and_partial_results(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

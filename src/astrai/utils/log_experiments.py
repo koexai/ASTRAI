@@ -472,7 +472,7 @@ class ExperimentRun:
         """Record the current best checkpoint and its persisted files."""
         checkpoint_files = {}
         for role, path in files.items():
-            artefact_path = Path(path)
+            artefact_path = Path(path).expanduser().resolve()
             checkpoint_files[role] = {
                 "path": artefact_path.relative_to(self.directory).as_posix(),
                 "size_bytes": artefact_path.stat().st_size,
