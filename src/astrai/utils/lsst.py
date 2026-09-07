@@ -1,5 +1,5 @@
 """
-astrai.lsst - Simulation of LSST-like observing conditions.
+astrai.utils.lsst - Simulation of LSST-like observing conditions.
 
 This module models the key observational constraints of the Vera C. Rubin
 Observatory (LSST) that affect ground-based time-domain surveys:
@@ -11,7 +11,7 @@ Observatory (LSST) that affect ground-based time-domain surveys:
   sky-area budget.
 
 The functions are vectorized with NumPy and designed to be called
-per-light-curve during data augmentation (see ``astrai.augmentation``).
+per-light-curve during data augmentation (see ``astrai.utils.augmentation``).
 
 References
 ----------

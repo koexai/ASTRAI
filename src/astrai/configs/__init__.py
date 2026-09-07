@@ -1,0 +1,1 @@
+"""Default ASTRAI configuration resources."""

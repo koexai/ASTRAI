@@ -18,11 +18,12 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
-from utils.runtime_environment import (
+from astrai.utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
+from astrai.utils.runtime_environment import (
     capture_execution_environment,
     capture_runtime_environment,
 )
+from astrai.paths import source_checkout_root, source_snapshot_root
 
 
 EXPERIMENT_METADATA_VERSION = 2
@@ -30,7 +31,8 @@ _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
 _PREPROCESSING_METADATA_SNAPSHOT_NAME = "preprocessing_metadata.yaml"
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_CHECKOUT_ROOT = source_checkout_root()
+_REPOSITORY_ROOT = _SOURCE_CHECKOUT_ROOT or source_snapshot_root()
 
 _EXCLUDED_CODE_DIRS = {
     "__MACOSX",
@@ -73,7 +75,7 @@ def create_experiment_dir(base_dir="experiments", now=None):
     suffix is added atomically if a caller supplies the same timestamp more
     than once, so an existing run is never reused or overwritten.
     """
-    base_path = Path(base_dir).expanduser()
+    base_path = Path(base_dir).expanduser().resolve()
     base_path.mkdir(parents=True, exist_ok=True)
     timestamp = (now or _utc_now()).strftime("%Y%m%d_%H%M%S_%f")
 
@@ -163,6 +165,15 @@ def _run_git_command(repository_root, *args):
 
 def _git_metadata(repository_root):
     """Describe the source revision used for an experiment run."""
+    if (
+        _SOURCE_CHECKOUT_ROOT is None
+        and Path(repository_root).resolve() == Path(_REPOSITORY_ROOT).resolve()
+    ):
+        return {
+            "commit": None,
+            "branch": None,
+            "working_tree_dirty": None,
+        }
     commit = _run_git_command(repository_root, "rev-parse", "HEAD")
     if commit is None:
         return {
@@ -252,7 +263,7 @@ class ExperimentRun:
         if exp_dir is None:
             directory = Path(create_experiment_dir(base_dir=base_dir))
         else:
-            directory = Path(exp_dir).expanduser()
+            directory = Path(exp_dir).expanduser().resolve()
             if directory.exists():
                 if not directory.is_dir():
                     raise NotADirectoryError(

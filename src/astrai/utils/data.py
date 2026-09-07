@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from utils.parameter_validation import validate_parameter_names
+from astrai.utils.parameter_validation import validate_parameter_names
 
 
 SUPPORTED_DATA_FORMATS = {"npy_csv", "parquet"}

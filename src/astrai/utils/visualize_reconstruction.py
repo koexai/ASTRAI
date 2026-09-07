@@ -10,9 +10,9 @@ For a single light curve, shows:
 
 Usage::
 
-    python visualize_reconstruction.py --exp experiments/20260306_143000
-    python visualize_reconstruction.py --exp experiments/20260306_143000 --index 42
-    python visualize_reconstruction.py --exp experiments/20260306_143000 --top 5
+    astrai visualize-reconstruction --exp experiments/20260306_143000
+    astrai visualize-reconstruction --exp experiments/20260306_143000 --index 42
+    astrai visualize-reconstruction --exp experiments/20260306_143000 --top 5
 """
 import argparse
 import numpy as np
@@ -21,12 +21,13 @@ import joblib
 import yaml
 import matplotlib.pyplot as plt
 
-from models.split_mlp import SplitMLPRegressor, MLPWithResiduals
-from models.unified_model import UnifiedModel
-from utils.augmentation import apply_lsst_pipeline
-from utils.checkpoints import experiment_artefact_path
-from utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
-from scripts.inference import load_data, load_model
+from astrai.models.split_mlp import SplitMLPRegressor, MLPWithResiduals
+from astrai.models.unified_model import UnifiedModel
+from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.checkpoints import experiment_artefact_path
+from astrai.utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
+from astrai.cli.inference import load_data, load_model
+from astrai.paths import resolve_config_path
 
 
 def load_from_experiment(exp_dir, cfg, device):
@@ -249,18 +250,19 @@ def plot_single(
     plt.tight_layout()
 
 
-def main():
+def main(argv=None):
     """Main function to run the visualization.
     Parses command-line arguments, loads the model and data, computes reconstructions,
     and generates plots for selected samples."""
     parser = argparse.ArgumentParser(
+        prog="astrai visualize-reconstruction",
         description="Visualize the full reconstruction pipeline."
     )
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/default.yaml",
-        help="Path to config YAML",
+        default=None,
+        help="Config YAML (default: packaged default.yaml)",
     )
     parser.add_argument(
         "--exp",
@@ -286,9 +288,10 @@ def main():
         default=42,
         help="Base seed for reproducible LSST diagnostic augmentation",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    config_path = resolve_config_path(args.config, "default.yaml")
 
-    with open(args.config, encoding="utf-8") as f:
+    with config_path.open(encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

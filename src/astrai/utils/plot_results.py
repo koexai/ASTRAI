@@ -11,8 +11,7 @@ the complete test batch and produces:
 4. CSV files containing the numerical values shown in the figures.
 
 Named samples are ranked exclusively by augmentation RMSE, not by model
-performance. Run this module from the repository root with
-``python -m utils.plot_results``.
+performance. Use the installed ``astrai plot-results`` command.
 """
 import argparse
 from pathlib import Path
@@ -21,9 +20,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from utils.augmentation import apply_lsst_pipeline
-from utils.array_dtypes import load_model_array
-from utils.checkpoints import load_config, load_characterizer, load_generator
+from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.array_dtypes import load_model_array
+from astrai.utils.checkpoints import load_config, load_characterizer, load_generator
 
 
 _SAMPLE_DIAGNOSTIC_HEADER = (
@@ -682,18 +681,23 @@ def plot_reconstruction_error(
 # ---------------------------------------------------------------------------
 
 
-def main():
+def main(argv=None):
     """Validate inputs and generate reproducible ASTRAI diagnostics."""
     parser = argparse.ArgumentParser(
+        prog="astrai plot-results",
         description="Generate ASTRAI result plots."
     )
     parser.add_argument(
+        "--exp-char",
         "--exp_char",
+        dest="exp_char",
         required=True,
         help="Characterizer experiment directory",
     )
     parser.add_argument(
+        "--exp-gen",
         "--exp_gen",
+        dest="exp_gen",
         required=True,
         help="Generator experiment directory",
     )
@@ -732,17 +736,21 @@ def main():
         help="Display figures interactively after saving them",
     )
     parser.add_argument(
+        "--output-dir",
         "--output_dir",
+        dest="output_dir",
         required=True,
         help="Directory where plots and numerical diagnostics are saved",
     )
     parser.add_argument(
+        "--lsst-seed",
         "--lsst_seed",
+        dest="lsst_seed",
         type=int,
         default=42,
         help="RNG seed for the diagnostic augmentation (default: 42)",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     char_cfg, char_config_path = load_experiment_config(args.exp_char)
     gen_cfg, gen_config_path = load_experiment_config(args.exp_gen)
