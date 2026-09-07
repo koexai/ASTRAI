@@ -20,7 +20,6 @@ jobs:
     timeout-minutes: 20
     env:
       MPLBACKEND: Agg
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/scripts
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -31,14 +30,40 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
+      - name: Install project in editable mode
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --editable .
           python -m pip check
 
       - name: Compile Python sources
-        run: python -m compileall -q models scripts utils tests
+        run: python -m compileall -q src scripts tests
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+      - name: Smoke test source compatibility wrappers
+        run: |
+          for module in main preprocess train train_characterizer \
+            train_generator inference inference_split infer_bol_batch \
+            benchmark_end_to_end_inference benchmark_lcgen_generation; do
+            python -m "scripts.$module" --help >/dev/null
+          done
+
+      - name: Build and install wheel
+        run: |
+          python -m pip wheel --no-build-isolation --no-deps --wheel-dir dist .
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -m pip check
+
+      - name: Smoke test installed CLI outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          astrai --version
+          astrai --help
+          for command in pipeline preprocess train train-characterizer \
+            train-generator infer infer-split infer-real \
+            benchmark-inference benchmark-generation plot-results \
+            plot-curves visualize-reconstruction; do
+            astrai "$command" --help >/dev/null
+          done
