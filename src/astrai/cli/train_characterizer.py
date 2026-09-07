@@ -44,7 +44,7 @@ from astrai.utils.training import (
     select_training_device,
     train_supervised_model,
 )
-from astrai.paths import resolve_config_path
+from astrai.paths import resolve_config_path, resolve_user_path
 
 
 def _load_fold_data(fold_dir):
@@ -201,6 +201,7 @@ def run_characterizer_training(
 
     held_out_fold = char_cfg["training"].get("held_out_fold")
     fold_indices = resolve_fold_indices(held_out_fold, n_splits)
+    prep_dir = resolve_user_path(prep_dir)
 
     device = select_training_device()
 
@@ -237,7 +238,7 @@ def run_characterizer_training(
 
         for fold_idx in fold_indices:
             start_time = time.time()
-            fold_dir = os.path.join(prep_dir, f"fold_{fold_idx}")
+            fold_dir = prep_dir / f"fold_{fold_idx}"
 
             (
                 x_train_clean_pca,

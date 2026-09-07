@@ -53,8 +53,16 @@ class ExperimentArtefactPathTests(unittest.TestCase):
             exp_dir = root / "experiment"
             prep_dir.mkdir()
             exp_dir.mkdir()
-            for filename in ("x.pkl", "y.pkl", "pca.pkl"):
-                joblib.dump({"source": filename}, prep_dir / filename)
+            preprocessing_files = {
+                "x_scaler.pkl": "x.pkl",
+                "y_scaler.pkl": "y.pkl",
+                "pca.pkl": "pca.pkl",
+            }
+            for source_name, checkpoint_name in preprocessing_files.items():
+                joblib.dump(
+                    {"source": checkpoint_name},
+                    prep_dir / source_name,
+                )
             checkpoint_cfg = {
                 "model": "model.pth",
                 "x_scaler": "x.pkl",

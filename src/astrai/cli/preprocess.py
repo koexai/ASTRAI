@@ -21,6 +21,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import yaml
 from sklearn.decomposition import PCA
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
@@ -440,7 +441,7 @@ def run_preprocessing(cfg, out_dir=None, config_path=None):
         save_code(run_dir, folder=_REPOSITORY_ROOT)
         _generate_preprocessing_artefacts(cfg, run_dir)
         array_artefacts = _array_artefact_metadata(run_dir)
-    except Exception as exc:
+    except BaseException as exc:
         metadata["run"].update(
             {
                 "status": "failed",
