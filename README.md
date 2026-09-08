@@ -276,14 +276,17 @@ preprocessed/
     code.zip                               # Python source snapshot
     metadata.yaml                          # Run, fold and Git metadata
     x_scaler.pkl, y_scaler.pkl, pca.pkl    # Global artefacts
-    x_raw.npy, y_raw.npy                   # Raw data (log-transformed params)
+    x_raw.npy                              # Original light curves
+    y_physical.npy                         # Physical parameters
+    y_transformed.npy                      # log1p physical parameters
     fold_1/
       x_train_clean_pca.npy                 # Clean training curves (PCA space)
       x_train_aug_pca.npy                   # LSST-augmented training curves
       x_test_pca.npy                        # Test curves (PCA space)
       x_test_clean.npy                      # Test curves (original space)
       y_train_scaled.npy, y_test_scaled.npy # Scaled parameters
-      y_test.npy                            # Original test parameters
+      y_test_transformed.npy                # Test parameters in model space
+      y_test_physical.npy                   # Test parameters in physical space
       train_idx.npy, test_idx.npy           # Fold indices
     fold_2/
       ...
@@ -304,6 +307,27 @@ intermediate calculations; it makes the saved representation match the
 containing legacy `float64` model arrays remain supported: training and
 diagnostic loaders normalise them to `float32` in memory. Failed runs remain
 marked as `failed` and are never silently reused.
+
+### Target representation
+
+ASTRAI uses one explicit target contract throughout preprocessing, training,
+inference, diagnostics and benchmarks:
+
+```
+physical (finite and non-negative) -> log1p -> transformed -> StandardScaler -> scaled
+```
+
+The inverse path removes target scaling and then applies `expm1`. Zero is a
+valid physical parameter value. Model predictions are not clipped when they
+are decoded, so extrapolation remains visible. New configurations record
+`data.target_transform: log1p`; configurations from before this field was
+introduced retain `log1p` as their compatibility default.
+
+New preprocessing runs use artefact schema 5 and record both physical and
+transformed target arrays with unambiguous filenames. Metadata-free legacy
+artefact directories remain readable. Versioned schema 1--4 preprocessing
+runs must be regenerated because their stored target representation is not
+self-describing.
 
 ### Reproducibility
 
@@ -355,9 +379,10 @@ final report preserves all existing unweighted aggregate metrics and also
 shows the mean and standard deviation of every per-parameter metric across
 folds; a configured `held_out_fold` produces a single-fold report instead.
 
-The per-parameter and aggregate values use the same evaluation-space targets
-after reversing the target standardisation. This reporting does not introduce
-an additional target transformation.
+Historical aggregate metrics and checkpoint selection remain in transformed
+target space after reversing target standardisation. Per-parameter metrics are
+reported both in transformed space and in physical units; physical RMSE and
+MAE are not averaged across parameters with heterogeneous units.
 
 ### Generator Training (`astrai train-generator`)
 
@@ -375,6 +400,12 @@ The generic real-data command accepts the observed `bol` text format used by
 the existing batch pipeline. Single and batch modes execute the same `L+BB`
 loading, interpolation, missing-edge filling, scaling/PCA, characterization
 and generation code.
+
+The generic `infer` and `infer-split` commands, as well as single and batch
+real-data inference, display and persist parameter predictions in physical
+space. Direct PPReg-to-LCGen handoff remains in scaled transformed space and
+is accepted only when the two target scalers and transformation contracts are
+compatible.
 
 For SN2018HNA, the catalogue explosion epoch is `58411.3`. The numeric epoch
 and current unit convention are preserved as-is; no discovery epoch or unit
@@ -410,6 +441,7 @@ Per-timestep reconstruction error and best-sample overlay:
 astrai plot-results \
     --exp-char experiments/characterizer/YYYYMMDD_HHMMSS_microseconds \
     --exp-gen  experiments/generator/YYYYMMDD_HHMMSS_microseconds \
+    --prep preprocessed/YYYYMMDD_HHMMSS_default_split \
     --fold 1 \
     --output-dir plots/
 ```
@@ -422,7 +454,8 @@ astrai visualize-reconstruction \
     --top 5
 ```
 
-Options: `--index N` for a specific sample, `--top N` for the N best by characterization RMSE.
+Options: `--index N` for a specific sample, `--top N` for the N best by
+transformed-space characterisation RMSE.
 
 ### Semi-analytical Model Curves
 
@@ -504,7 +537,7 @@ All hyperparameters are set via YAML config files in `configs/`.
 
 | Section | Key Parameters |
 |---------|---------------|
-| `data` | `format`, `n_days`, `n_params`, `param_names`, `samples_per_day` |
+| `data` | `format`, `target_transform`, `n_days`, `n_params`, `param_names`, `samples_per_day` |
 | `preprocessing` | `pca_components` (32), `n_splits` (K-Fold), `random_seed` |
 | `augmentation` | `noise_std` (0.05) |
 | `characterizer` | `model` (width, depth, dropout), `training` (batch_size, epochs, lr) |
@@ -561,7 +594,8 @@ retain their error and any partial fold records. Characterizer and Generator
 runs started by `astrai pipeline` share a
 `pipeline_run_id`, and each snapshots the metadata of its completed
 preprocessing input. Older preprocessing directories without metadata remain
-accepted and are explicitly marked as legacy inputs.
+accepted and are explicitly marked as legacy inputs. Versioned preprocessing
+runs must use the current self-describing target contract.
 
 Source provenance follows the installed `astrai` package location rather than
 the process working directory. An editable checkout records that checkout's
@@ -583,15 +617,17 @@ configuration compatibility while keeping all output within the current run.
 | Preprocessing artefacts | 2 | Array dtype contract and per-array dtype/shape manifest |
 | Preprocessing artefacts | 3 | Seed-derivation scheme and effective preprocessing seed plan |
 | Preprocessing artefacts | 4 | Python, platform, installed distributions and PyTorch runtime environment |
+| Preprocessing artefacts | 5 | Explicit physical, transformed and scaled target artefacts and target-transformation contract |
 | Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
 | Training experiments | 2 | Runtime environment and effective deterministic execution settings |
+| Training experiments | 3 | Target-transformation contract and explicit metric-space metadata |
 
 ## Metrics
 
 Evaluation reports R2, RMSE, RRMSE, and MAE:
-- **Characterization**: named per-parameter metrics and their unweighted
-  aggregate. Characterizer training reports fold and cross-fold values;
-  inference reports bootstrap confidence intervals.
+- **Characterization**: named per-parameter metrics in transformed and physical
+  spaces. The historical unweighted aggregate and checkpoint selection remain
+  in transformed space; inference reports bootstrap confidence intervals.
 - **Generation**: flattened across all time-steps and samples.
 
 ## Support
