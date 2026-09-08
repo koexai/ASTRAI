@@ -30,9 +30,17 @@ from astrai.utils.metrics import (
     get_r_squared,
     get_rrmse,
     compute_metrics,
+    compute_target_metrics,
 )
-from astrai.utils.checkpoints import load_data, load_unified_model
+from astrai.utils.checkpoints import load_unified_model
 from astrai.utils.configuration import load_config
+from astrai.utils.data import load_raw_data
+from astrai.utils.target_transformations import (
+    physical_to_scaled,
+    physical_to_transformed,
+    scaled_to_physical,
+    scaled_to_transformed,
+)
 from astrai.paths import resolve_config_path
 
 
@@ -61,12 +69,27 @@ def load_model(cfg, device, exp_dir=None):
     return load_unified_model(cfg, device, exp_dir=exp_dir)
 
 
-def characterize(model, x, x_scaler, y_scaler, pca, device):
+def characterize_scaled(model, x, x_scaler, pca, device):
+    """Run characterisation and return model outputs in scaled space."""
+    x_scaled = x_scaler.transform(x)
+    x_pca = pca.transform(x_scaled)
+
+    with torch.no_grad():
+        x_tensor = torch.FloatTensor(x_pca).to(device)
+        return model.regressor(x_tensor).cpu().numpy()
+
+
+def characterize_transformed(model, x, x_scaler, y_scaler, pca, device):
+    """Run characterisation and return parameters in transformed space."""
+    pred_scaled = characterize_scaled(model, x, x_scaler, pca, device)
+    return scaled_to_transformed(pred_scaled, y_scaler)
+
+
+def characterize(model, x, x_scaler, y_scaler, pca, device, cfg=None):
     """Characterization branch: curves -> predicted physical parameters.
 
     Applies feature scaling, PCA compression, regressor forward pass,
-    and inverse target scaling to return predictions in the original
-    (log1p-transformed) parameter space.
+    and the canonical inverse target transformation.
 
     Parameters
     ----------
@@ -88,18 +111,21 @@ def characterize(model, x, x_scaler, y_scaler, pca, device):
     numpy.ndarray
         Predicted parameters of shape ``(n_samples, n_params)``.
     """
-    x_scaled = x_scaler.transform(x)
-    x_pca = pca.transform(x_scaled)
+    pred_scaled = characterize_scaled(model, x, x_scaler, pca, device)
+    return scaled_to_physical(pred_scaled, y_scaler, cfg)
 
+
+def generate_from_scaled(model, y_scaled, x_scaler, pca, device):
+    """Generate light curves from model parameters already in scaled space."""
     with torch.no_grad():
-        x_tensor = torch.FloatTensor(x_pca).to(device)
-        pred_params_sc = model.regressor(x_tensor).cpu().numpy()
+        y_tensor = torch.FloatTensor(y_scaled).to(device)
+        pred_curves_pca = model.generator(y_tensor).cpu().numpy()
 
-    pred_params = y_scaler.inverse_transform(pred_params_sc)
-    return pred_params
+    pred_curves_scaled = pca.inverse_transform(pred_curves_pca)
+    return x_scaler.inverse_transform(pred_curves_scaled)
 
 
-def generate(model, y, x_scaler, y_scaler, pca, device):
+def generate(model, y, x_scaler, y_scaler, pca, device, cfg=None):
     """Generation branch: parameters -> predicted light curves.
 
     Applies target scaling, generator forward pass, inverse PCA, and
@@ -111,7 +137,7 @@ def generate(model, y, x_scaler, y_scaler, pca, device):
     model : UnifiedModel
         Trained unified model in eval mode.
     y : numpy.ndarray
-        Ground-truth parameters of shape ``(n_samples, n_params)``.
+        Physical parameters of shape ``(n_samples, n_params)``.
     x_scaler : StandardScaler
         Fitted feature scaler (for inverse transform).
     y_scaler : StandardScaler
@@ -126,15 +152,43 @@ def generate(model, y, x_scaler, y_scaler, pca, device):
     numpy.ndarray
         Predicted light curves of shape ``(n_samples, n_days)``.
     """
-    y_scaled = y_scaler.transform(y)
+    y_scaled = physical_to_scaled(y, y_scaler, cfg)
+    return generate_from_scaled(model, y_scaled, x_scaler, pca, device)
 
-    with torch.no_grad():
-        y_tensor = torch.FloatTensor(y_scaled).to(device)
-        pred_curves_pca = model.generator(y_tensor).cpu().numpy()
 
-    pred_curves_scaled = pca.inverse_transform(pred_curves_pca)
-    pred_curves = x_scaler.inverse_transform(pred_curves_scaled)
-    return pred_curves
+def _bootstrap_per_parameter(
+    true,
+    pred,
+    param_names,
+    space,
+    n_boot=100,
+    seed=42,
+):
+    """Print bootstrap metrics for one explicitly named target space."""
+    rng = np.random.default_rng(seed)
+    print(
+        f"\n  Per-parameter metrics ({space} space; "
+        f"± from {n_boot} bootstrap resamples):"
+    )
+    print(
+        f"  {'Parameter':<12} {'R2':>19} {'RMSE':>19} "
+        f"{'RRMSE':>19} {'MAE':>19}"
+    )
+    print(f"  {'-'*12} {'-'*19} {'-'*19} {'-'*19} {'-'*19}")
+    for column, name in enumerate(param_names):
+        true_i, pred_i = true[:, column], pred[:, column]
+        boot = {metric: [] for metric in ("R2", "RMSE", "RRMSE", "MAE")}
+        for _ in range(n_boot):
+            indices = rng.integers(0, len(true_i), size=len(true_i))
+            boot["R2"].append(get_r_squared(true_i[indices], pred_i[indices]))
+            boot["RMSE"].append(get_rmse(true_i[indices], pred_i[indices]))
+            boot["RRMSE"].append(get_rrmse(true_i[indices], pred_i[indices]))
+            boot["MAE"].append(get_mae(true_i[indices], pred_i[indices]))
+        formatted = [
+            f"{np.mean(boot[metric]):.4f}±{np.std(boot[metric]):.4f}"
+            for metric in ("R2", "RMSE", "RRMSE", "MAE")
+        ]
+        print(f"  {name:<12} {' '.join(formatted)}")
 
 
 def print_metrics(name, metrics):
@@ -219,53 +273,55 @@ def main(argv=None):
         )
     else:
         print(f"Loading data from: {data_path}")
-    x, y = load_data(data_path, cfg)
-    has_labels = y is not None
+    x, y_physical = load_raw_data(data_path, cfg)
+    has_labels = y_physical is not None
 
     n_params = cfg["data"]["n_params"]
     param_names = cfg["data"]["param_names"]
 
     # Characterization: curves -> physical parameters
     print(f"\nRunning characterization ({len(x)} samples)...")
-    pred_params = characterize(model, x, x_scaler, y_scaler, pca, device)
+    pred_scaled = characterize_scaled(model, x, x_scaler, pca, device)
+    pred_transformed = scaled_to_transformed(pred_scaled, y_scaler)
+    pred_params = scaled_to_physical(pred_scaled, y_scaler, cfg)
 
     if has_labels:
-        char_metrics = compute_metrics(y, pred_params, n_cols=n_params)
-        print_metrics("CHARACTERIZATION (averaged)", char_metrics)
-
-        # Per-parameter breakdown for detailed diagnostics (with bootstrap ±)
-        n_boot = 100
-        rng = np.random.default_rng(42)
-        print(
-            f"\n  Per-parameter metrics (± from {n_boot} bootstrap resamples):"
+        y_transformed = physical_to_transformed(y_physical, cfg)
+        char_metrics = compute_target_metrics(
+            y_transformed,
+            pred_transformed,
+            param_names,
+            cfg,
         )
-        print(
-            f"  {'Parameter':<12} {'R2':>19} {'RMSE':>19} {'RRMSE':>19} {'MAE':>19}"
+        print_metrics(
+            "CHARACTERIZATION (transformed-space aggregate)",
+            char_metrics["transformed"]["aggregate"],
         )
-        print(f"  {'-'*12} {'-'*19} {'-'*19} {'-'*19} {'-'*19}")
-        for i, name in enumerate(param_names):
-            true_i, pred_i = y[:, i], pred_params[:, i]
-            boot = {m: [] for m in ("R2", "RMSE", "RRMSE", "MAE")}
-            for _ in range(n_boot):
-                idx = rng.integers(0, len(true_i), size=len(true_i))
-                boot["R2"].append(get_r_squared(true_i[idx], pred_i[idx]))
-                boot["RMSE"].append(get_rmse(true_i[idx], pred_i[idx]))
-                boot["RRMSE"].append(get_rrmse(true_i[idx], pred_i[idx]))
-                boot["MAE"].append(get_mae(true_i[idx], pred_i[idx]))
-            r2_m, r2_s = np.mean(boot["R2"]), np.std(boot["R2"])
-            rmse_m, rmse_s = np.mean(boot["RMSE"]), np.std(boot["RMSE"])
-            rrmse_m, rrmse_s = np.mean(boot["RRMSE"]), np.std(boot["RRMSE"])
-            mae_m, mae_s = np.mean(boot["MAE"]), np.std(boot["MAE"])
-            r2f = f"{r2_m:.4f}±{r2_s:.4f}"
-            rmsef = f"{rmse_m:.4f}±{rmse_s:.4f}"
-            rrmsef = f"{rrmse_m:.4f}±{rrmse_s:.4f}"
-            maef = f"{mae_m:.4f}±{mae_s:.4f}"
-            print(f"  {name:<12} {r2f} {rmsef} {rrmsef} {maef}")
+        _bootstrap_per_parameter(
+            y_transformed,
+            pred_transformed,
+            param_names,
+            "transformed",
+        )
+        _bootstrap_per_parameter(
+            y_physical,
+            pred_params,
+            param_names,
+            "physical",
+        )
 
     # Generation: ground-truth params -> reconstructed curves
     if has_labels:
-        print(f"\nRunning generation ({len(y)} samples)...")
-        pred_curves = generate(model, y, x_scaler, y_scaler, pca, device)
+        print(f"\nRunning generation ({len(y_physical)} samples)...")
+        pred_curves = generate(
+            model,
+            y_physical,
+            x_scaler,
+            y_scaler,
+            pca,
+            device,
+            cfg,
+        )
         gen_metrics = compute_metrics(x, pred_curves)
         print_metrics("GENERATION", gen_metrics)
 
@@ -276,7 +332,7 @@ def main(argv=None):
         )
         if has_labels:
             for i, p in enumerate(param_names):
-                results[f"true_{p}"] = y[:, i]
+                results[f"true_{p}"] = y_physical[:, i]
         results.to_parquet(args.output)
         print(f"\nPredictions saved to: {args.output}")
 

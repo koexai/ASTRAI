@@ -20,7 +20,7 @@ import torch
 from astrai.models.factories import build_characterizer
 from astrai.utils.metrics import (
     METRIC_NAMES,
-    compute_parameter_metrics,
+    compute_target_metrics,
 )
 from astrai.utils.parameter_validation import validate_parameter_names
 from astrai.utils.checkpoints import (
@@ -44,6 +44,11 @@ from astrai.utils.training import (
     select_training_device,
     train_supervised_model,
 )
+from astrai.utils.array_dtypes import as_model_array
+from astrai.utils.target_transformations import (
+    load_fold_target_array,
+    scaled_to_transformed,
+)
 from astrai.paths import resolve_config_path, resolve_user_path
 
 
@@ -54,34 +59,41 @@ def _load_fold_data(fold_dir):
     - x_train_aug_pca.npy
     - x_test_pca.npy
     - y_train_scaled.npy
-    - y_test.npy
+    - y_test_transformed.npy (or y_test.npy for metadata-free legacy runs)
     Returns:
     - x_train_clean_pca: (n_train_clean, n_pca)
     - x_train_aug_pca: (n_train_aug, n_pca)
     - x_test_pca: (n_test, n_pca)
     - y_train_scaled: (n_train, n_params)
     - y_test: (n_test, n_params)"""
-    return load_fold_arrays(
+    common = load_fold_arrays(
         fold_dir,
         (
             "x_train_clean_pca.npy",
             "x_train_aug_pca.npy",
             "x_test_pca.npy",
             "y_train_scaled.npy",
-            "y_test.npy",
         ),
     )
+    y_test_transformed = as_model_array(
+        load_fold_target_array(
+            fold_dir,
+            "y_test_transformed.npy",
+            legacy_name="y_test.npy",
+        )
+    )
+    return (*common, y_test_transformed)
 
 
 def _evaluate_characterizer(
-    model, x_test_pca, y_test, param_names, prep_dir, device
+    model, x_test_pca, y_test_transformed, param_names, prep_dir, device, cfg
 ):
     """Evaluate the characterizer and return aggregate and named metrics.
 
     Loads the y_scaler from prep_dir to inverse transform predictions.
     model: the trained characterizer model
     x_test_pca: (n_test, n_pca) PCA-transformed test curves
-    y_test: (n_test, n_params) true parameters for the test set
+    y_test_transformed: canonical transformed test parameters
     param_names: ordered names of the predicted parameters
     prep_dir: directory containing preprocessing artifacts (expects y_scaler.pkl)
     device: torch.device to run on
@@ -93,9 +105,14 @@ def _evaluate_characterizer(
     with torch.no_grad():
         x_test_t = torch.FloatTensor(x_test_pca).to(device)
         pred_sc = model(x_test_t).cpu().numpy()
-        pred_params = y_scaler.inverse_transform(pred_sc)
+        pred_transformed = scaled_to_transformed(pred_sc, y_scaler)
 
-    return compute_parameter_metrics(y_test, pred_params, param_names)
+    return compute_target_metrics(
+        y_test_transformed,
+        pred_transformed,
+        param_names,
+        cfg,
+    )
 
 
 def _initialise_parameter_history(param_names):
@@ -115,9 +132,9 @@ def _record_parameter_metrics(history, per_parameter):
             )
 
 
-def _print_parameter_metrics(per_parameter):
+def _print_parameter_metrics(per_parameter, space):
     """Print one fold's metrics in configured parameter order."""
-    print("    Per-parameter metrics:")
+    print(f"    Per-parameter metrics ({space} space):")
     for name, metrics in per_parameter.items():
         values = " | ".join(
             f"{metric_name}={metrics[metric_name]:.6f}"
@@ -216,13 +233,14 @@ def run_characterizer_training(
         folds=fold_indices,
         base_seed=base_seed,
         device=device,
-        checkpoint_metric="aggregate.R2",
+        checkpoint_metric="transformed.aggregate.R2",
     )
     exp_dir = str(experiment.directory)
     print(f"Characterizer experiment directory: {exp_dir}")
 
     history = create_metric_history()
-    parameter_history = _initialise_parameter_history(param_names)
+    transformed_parameter_history = _initialise_parameter_history(param_names)
+    physical_parameter_history = _initialise_parameter_history(param_names)
     best_r2 = -np.inf
 
     try:
@@ -245,7 +263,7 @@ def run_characterizer_training(
                 x_train_aug_pca,
                 x_test_pca,
                 y_train_scaled,
-                y_test,
+                y_test_transformed,
             ) = _load_fold_data(fold_dir)
             print(
                 f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
@@ -297,16 +315,33 @@ def run_characterizer_training(
             )
 
             evaluation = _evaluate_characterizer(
-                model, x_test_pca, y_test, param_names, prep_dir, device
+                model,
+                x_test_pca,
+                y_test_transformed,
+                param_names,
+                prep_dir,
+                device,
+                cfg,
             )
-            metrics = evaluation["aggregate"]
+            metrics = evaluation["transformed"]["aggregate"]
 
             record_metric_values(history, metrics)
             _record_parameter_metrics(
-                parameter_history,
-                evaluation["per_parameter"],
+                transformed_parameter_history,
+                evaluation["transformed"]["per_parameter"],
             )
-            _print_parameter_metrics(evaluation["per_parameter"])
+            _record_parameter_metrics(
+                physical_parameter_history,
+                evaluation["physical"]["per_parameter"],
+            )
+            _print_parameter_metrics(
+                evaluation["transformed"]["per_parameter"],
+                "transformed",
+            )
+            _print_parameter_metrics(
+                evaluation["physical"]["per_parameter"],
+                "physical",
+            )
 
             elapsed = time.time() - start_time
             print(
@@ -343,15 +378,31 @@ def run_characterizer_training(
             history,
             held_out_fold=held_out_fold,
         )
-        _print_parameter_final_stats(parameter_history, held_out_fold)
+        print("\nTransformed target space:")
+        _print_parameter_final_stats(
+            transformed_parameter_history,
+            held_out_fold,
+        )
+        print("\nPhysical target space:")
+        _print_parameter_final_stats(
+            physical_parameter_history,
+            held_out_fold,
+        )
         print("=" * 50)
 
         experiment.complete(
             {
-                "aggregate": summarise_metric_history(history),
-                "per_parameter": _summarise_parameter_history(
-                    parameter_history
-                ),
+                "transformed": {
+                    "aggregate": summarise_metric_history(history),
+                    "per_parameter": _summarise_parameter_history(
+                        transformed_parameter_history
+                    ),
+                },
+                "physical": {
+                    "per_parameter": _summarise_parameter_history(
+                        physical_parameter_history
+                    ),
+                },
             }
         )
     except BaseException as exc:

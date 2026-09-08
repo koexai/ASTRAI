@@ -13,6 +13,10 @@ import numpy as np
 import pandas as pd
 
 from astrai.paths import resolve_config_path
+from astrai.utils.target_transformations import (
+    scaled_to_physical,
+    validate_parameter_scalers,
+)
 
 BOL_DIR = "data/real/87Alike_bolometric"
 INFO_FILE = "data/real/metadata/info_87Alike.txt"
@@ -107,7 +111,9 @@ def load_bol_txt(txt_path, explosion_mjd, n_days):
     return curve, obs_days, obs_log10, obs_err_log10
 
 
-def run_characterization(curve, char_model, x_scaler, y_scaler, pca, device):
+def run_characterization(
+    curve, char_model, x_scaler, y_scaler, pca, device, cfg=None
+):
     """Curve (1D array) -> predicted physical parameters (original scale).
     curve: (n_timepoints,) input light curve (log10 L_bol)
     char_model: the loaded characterizer model
@@ -131,8 +137,7 @@ def run_characterization(curve, char_model, x_scaler, y_scaler, pca, device):
     with torch.no_grad():
         pred_sc = char_model(torch.FloatTensor(x_pca).to(device)).cpu().numpy()
 
-    pred_log1p = y_scaler.inverse_transform(pred_sc)[0]
-    pred_params = np.expm1(pred_log1p)
+    pred_params = scaled_to_physical(pred_sc, y_scaler, cfg)[0]
     return pred_params, pred_sc
 
 
@@ -330,6 +335,16 @@ def _load_models(cfg, device, exp_char, exp_gen):
     char = load_characterizer(cfg, device, exp_char)
     print(f"Loading generator from: {exp_gen}")
     gen = load_generator(cfg, device, exp_gen)
+    validate_parameter_scalers(
+        char[2],
+        gen[2],
+        context="characterizer output and generator input scaling",
+    )
+    n_params = cfg["data"]["n_params"]
+    if np.asarray(char[2].mean_).shape != (n_params,):
+        raise ValueError(
+            "Parameter scaler dimension does not match data.n_params"
+        )
     return char, gen
 
 
@@ -361,7 +376,7 @@ def infer_supernova(
     char_model, c_xsc, c_ysc, c_pca = char
     gen_model, g_xsc, _, g_pca = gen
     pred_params, pred_sc = run_characterization(
-        curve, char_model, c_xsc, c_ysc, c_pca, device
+        curve, char_model, c_xsc, c_ysc, c_pca, device, cfg
     )
     reconstructed = run_generation(
         pred_sc, gen_model, g_xsc, g_pca, device
