@@ -27,12 +27,24 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
 from astrai.models.factories import build_unified_model
-from astrai.utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
+from astrai.utils.metrics import (
+    METRIC_NAMES,
+    compute_target_metrics,
+    get_rmse,
+    get_mae,
+    get_r_squared,
+    get_rrmse,
+)
 from astrai.utils.checkpoints import (
     checkpoint_artefact_paths,
     load_config,
-    load_data,
     save_model_checkpoint,
+)
+from astrai.utils.data import load_raw_data
+from astrai.utils.parameter_validation import validate_parameter_names
+from astrai.utils.target_transformations import (
+    physical_to_transformed,
+    scaled_to_transformed,
 )
 from astrai.utils.augmentation import apply_lsst_pipeline
 from astrai.utils.log_experiments import ExperimentRun, summarise_metric_history
@@ -170,6 +182,7 @@ def _evaluate_fold(
     x_scaler,
     n_params,
     device,
+    cfg=None,
 ):
     """Run evaluation on the held-out fold and return metric dicts.
     model: the trained UnifiedModel to evaluate
@@ -196,31 +209,24 @@ def _evaluate_fold(
         pred_params_sc = model.regressor(x_test_t).cpu().numpy()
         pred_curves_pca = model.generator(y_test_t).cpu().numpy()
 
-        pred_params = y_scaler.inverse_transform(pred_params_sc)
+        pred_params_transformed = scaled_to_transformed(
+            pred_params_sc,
+            y_scaler,
+        )
         pred_curves = x_scaler.inverse_transform(
             pca.inverse_transform(pred_curves_pca)
         )
 
-    char_metrics = {
-        "RMSE": np.mean(
-            [get_rmse(y_test[:, i], pred_params[:, i]) for i in range(n_params)]
-        ),
-        "RRMSE": np.mean(
-            [
-                get_rrmse(y_test[:, i], pred_params[:, i])
-                for i in range(n_params)
-            ]
-        ),
-        "MAE": np.mean(
-            [get_mae(y_test[:, i], pred_params[:, i]) for i in range(n_params)]
-        ),
-        "R2": np.mean(
-            [
-                get_r_squared(y_test[:, i], pred_params[:, i])
-                for i in range(n_params)
-            ]
-        ),
-    }
+    param_names = validate_parameter_names(
+        n_params,
+        None if cfg is None else cfg["data"].get("param_names"),
+    )
+    char_metrics = compute_target_metrics(
+        y_test,
+        pred_params_transformed,
+        param_names,
+        cfg,
+    )
     gen_metrics = {
         "RMSE": get_rmse(x_test_clean.ravel(), pred_curves.ravel()),
         "RRMSE": get_rrmse(x_test_clean.ravel(), pred_curves.ravel()),
@@ -228,6 +234,38 @@ def _evaluate_fold(
         "R2": get_r_squared(x_test_clean.ravel(), pred_curves.ravel()),
     }
     return char_metrics, gen_metrics
+
+
+def _initialise_parameter_history(param_names):
+    return {
+        name: {metric: [] for metric in METRIC_NAMES}
+        for name in param_names
+    }
+
+
+def _record_parameter_metrics(history, per_parameter):
+    for name, metric_history in history.items():
+        for metric in METRIC_NAMES:
+            metric_history[metric].append(per_parameter[name][metric])
+
+
+def _print_parameter_history(history, space):
+    """Print cross-validation parameter metrics in one explicit space."""
+    print(f"\n--- CHARACTERIZATION ({space} space, per parameter) ---")
+    for name, metric_history in history.items():
+        print(f"  {name}:")
+        for metric, values in metric_history.items():
+            print(
+                f"    {metric}: {np.mean(values):.4f}  "
+                f"(+/- {np.std(values):.4f})"
+            )
+
+
+def _summarise_parameter_history(history):
+    return {
+        name: summarise_metric_history(metric_history)
+        for name, metric_history in history.items()
+    }
 
 
 def _execute_unified_training(cfg, experiment, device):
@@ -251,12 +289,19 @@ def _execute_unified_training(cfg, experiment, device):
     train_cfg = cfg["training"]
     n_days = data_cfg["n_days"]
     n_params = data_cfg["n_params"]
+    param_names = validate_parameter_names(
+        n_params,
+        data_cfg.get("param_names"),
+    )
     samples_per_day = data_cfg.get("samples_per_day", 4)
     n_pca = model_cfg["pca_components"]
     noise_std = cfg["augmentation"]["noise_std"]
 
     print(f"Loading data on {device}...")
-    x_raw, y_raw = load_data(None, cfg)
+    x_raw, y_physical = load_raw_data(None, cfg)
+    if y_physical is None:
+        raise ValueError("Unified training requires physical parameter labels")
+    y_transformed = physical_to_transformed(y_physical, cfg)
 
     kf = KFold(
         n_splits=train_cfg["n_splits"],
@@ -266,6 +311,8 @@ def _execute_unified_training(cfg, experiment, device):
 
     history_char = create_metric_history()
     history_gen = create_metric_history()
+    transformed_parameter_history = _initialise_parameter_history(param_names)
+    physical_parameter_history = _initialise_parameter_history(param_names)
     best_global_r2 = -np.inf
 
     print(f"Starting Training Char + Gen with PCA ({n_pca} components)...")
@@ -291,7 +338,8 @@ def _execute_unified_training(cfg, experiment, device):
         )
 
         x_train_clean, x_test_clean = x_raw[train_idx], x_raw[test_idx]
-        y_train, y_test = y_raw[train_idx], y_raw[test_idx]
+        y_train = y_transformed[train_idx]
+        y_test = y_transformed[test_idx]
 
         (
             x_train_combined,
@@ -355,15 +403,28 @@ def _execute_unified_training(cfg, experiment, device):
             x_scaler,
             n_params,
             device,
+            cfg,
         )
 
-        record_metric_values(history_char, char_m)
+        transformed_char_metrics = char_m["transformed"]["aggregate"]
+
+        record_metric_values(history_char, transformed_char_metrics)
         record_metric_values(history_gen, gen_m)
+        _record_parameter_metrics(
+            transformed_parameter_history,
+            char_m["transformed"]["per_parameter"],
+        )
+        _record_parameter_metrics(
+            physical_parameter_history,
+            char_m["physical"]["per_parameter"],
+        )
 
         elapsed = time.time() - start_time
         print(
             f"Fold {fold_idx} | {elapsed:.0f}s |",
-            f"Char R2: {char_m['R2']:.4f} | Gen R2: {gen_m['R2']:.4f}",
+            "Char R2 (transformed): "
+            f"{transformed_char_metrics['R2']:.4f} | "
+            f"Gen R2: {gen_m['R2']:.4f}",
         )
         experiment.record_fold(
             fold_idx,
@@ -379,8 +440,8 @@ def _execute_unified_training(cfg, experiment, device):
             elapsed,
         )
 
-        if char_m["R2"] > best_global_r2:
-            best_global_r2 = char_m["R2"]
+        if transformed_char_metrics["R2"] > best_global_r2:
+            best_global_r2 = transformed_char_metrics["R2"]
             save_model_checkpoint(
                 exp_dir, cfg["checkpoint"], model, x_scaler, y_scaler, pca
             )
@@ -391,16 +452,30 @@ def _execute_unified_training(cfg, experiment, device):
             )
 
     print("\n" + "=" * 50)
-    print("FINAL PERFORMANCE REPORT (Un-scaled metrics)")
+    print("FINAL PERFORMANCE REPORT")
     print(f"PCA Components: {n_pca}")
     print("=" * 50)
-    print_metric_history("CHARACTERIZATION", history_char)
+    print_metric_history("CHARACTERIZATION (transformed space)", history_char)
     print_metric_history("GENERATION", history_gen)
+    _print_parameter_history(transformed_parameter_history, "transformed")
+    _print_parameter_history(physical_parameter_history, "physical")
     print("=" * 50)
 
     experiment.complete(
         {
-            "characterization": summarise_metric_history(history_char),
+            "characterization": {
+                "transformed": {
+                    "aggregate": summarise_metric_history(history_char),
+                    "per_parameter": _summarise_parameter_history(
+                        transformed_parameter_history
+                    ),
+                },
+                "physical": {
+                    "per_parameter": _summarise_parameter_history(
+                        physical_parameter_history
+                    ),
+                },
+            },
             "generation": summarise_metric_history(history_gen),
         }
     )
@@ -423,7 +498,7 @@ def run_unified_training(
         folds=range(1, train_cfg["n_splits"] + 1),
         base_seed=train_cfg["random_seed"],
         device=device,
-        checkpoint_metric="characterization.R2",
+        checkpoint_metric="characterization.transformed.aggregate.R2",
     )
     try:
         _execute_unified_training(cfg, experiment, device)

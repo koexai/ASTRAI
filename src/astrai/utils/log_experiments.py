@@ -23,10 +23,14 @@ from astrai.utils.runtime_environment import (
     capture_execution_environment,
     capture_runtime_environment,
 )
+from astrai.utils.target_transformations import (
+    target_transform_contract,
+    validate_preprocessing_target_contract,
+)
 from astrai.paths import source_checkout_root, source_snapshot_root
 
 
-EXPERIMENT_METADATA_VERSION = 2
+EXPERIMENT_METADATA_VERSION = 3
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -260,6 +264,7 @@ class ExperimentRun:
         repository_root=_REPOSITORY_ROOT,
     ):
         """Create a run, snapshot its inputs and record ``running`` status."""
+        target_contract = target_transform_contract(config)
         if exp_dir is None:
             directory = Path(create_experiment_dir(base_dir=base_dir))
         else:
@@ -305,6 +310,7 @@ class ExperimentRun:
             "data": {
                 "n_params": config.get("data", {}).get("n_params"),
                 "param_names": parameter_names,
+                "target_transform": target_contract,
                 "array_dtypes": {
                     "model": MODEL_ARRAY_DTYPE.name,
                     "indices": INDEX_ARRAY_DTYPE.name,
@@ -340,6 +346,13 @@ class ExperimentRun:
                 "legacy_without_metadata": None,
             },
             "results": {
+                "metric_spaces": {
+                    "characterization": {
+                        "aggregate": "transformed",
+                        "per_parameter": ["transformed", "physical"],
+                    },
+                    "generation": "light_curve",
+                },
                 "folds": [],
                 "summary": {},
             },
@@ -363,6 +376,7 @@ class ExperimentRun:
                 cls._snapshot_preprocessing_metadata(
                     directory,
                     preprocessing_dir,
+                    config,
                 )
             )
             save_config(
@@ -379,7 +393,7 @@ class ExperimentRun:
         return run
 
     @staticmethod
-    def _snapshot_preprocessing_metadata(directory, preprocessing_dir):
+    def _snapshot_preprocessing_metadata(directory, preprocessing_dir, config):
         """Copy preprocessing metadata when available and describe its source."""
         if preprocessing_dir is None:
             return {
@@ -414,6 +428,8 @@ class ExperimentRun:
                 "Preprocessing metadata must describe a completed run; "
                 f"found status {source_status!r} in {source_metadata}."
             )
+
+        validate_preprocessing_target_contract(source_dir, config)
 
         snapshot = directory / _PREPROCESSING_METADATA_SNAPSHOT_NAME
         shutil.copy2(source_metadata, snapshot)

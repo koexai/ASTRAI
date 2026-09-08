@@ -10,6 +10,36 @@ from astrai.cli import infer_real
 
 
 class RealSupernovaInferenceTests(unittest.TestCase):
+    def test_characterization_decodes_zero_in_physical_space(self):
+        import torch
+
+        class IdentityTransformer:
+            @staticmethod
+            def transform(values):
+                return np.asarray(values)
+
+            @staticmethod
+            def inverse_transform(values):
+                return np.asarray(values)
+
+        class FixedModel:
+            @staticmethod
+            def __call__(_values):
+                return torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+        predicted, scaled = infer_real.run_characterization(
+            np.array([40.0, 41.0]),
+            FixedModel(),
+            IdentityTransformer(),
+            IdentityTransformer(),
+            IdentityTransformer(),
+            torch.device("cpu"),
+            {"data": {"target_transform": "log1p"}},
+        )
+
+        np.testing.assert_array_equal(scaled, [[0.0, 1.0]])
+        np.testing.assert_allclose(predicted, [0.0, np.e - 1.0])
+
     def test_bol_preprocessing_preserves_the_batch_numerical_contract(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "bol_TEST_UBVRI.txt"

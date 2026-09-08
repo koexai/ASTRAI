@@ -84,7 +84,8 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             ),
             "y_train_scaled.npy": y_train_scaled,
             "y_test_scaled.npy": y_test_scaled,
-            "y_test.npy": raw_parameters[4:6],
+            "y_test_transformed.npy": raw_parameters[4:6],
+            "y_test_physical.npy": np.expm1(raw_parameters[4:6]),
             "x_test_clean.npy": raw_curves[4:6],
         }
         for filename, values in arrays.items():
@@ -96,8 +97,15 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
         (prep_dir / "metadata.yaml").write_text(
             yaml.safe_dump(
                 {
-                    "preprocessing_artefact_schema_version": 3,
+                    "preprocessing_artefact_schema_version": 5,
                     "run": {"status": "completed"},
+                    "target_transform": {
+                        "name": "log1p",
+                        "version": 1,
+                        "input_space": "physical",
+                        "model_space": "transformed",
+                        "physical_domain": "non_negative",
+                    },
                 }
             ),
             encoding="utf-8",
@@ -115,7 +123,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             metadata["reproducibility"]["fold_seed_plans"],
         )
         self.assertEqual(metadata["preprocessing"]["source_run_status"], "completed")
-        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 3)
+        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 5)
         self.assertEqual(metadata["checkpoint"]["best_fold"], 1)
         self.assertIn(model_name, metadata["artefacts"])
         self.assertIn("preprocessing_metadata.yaml", metadata["artefacts"])

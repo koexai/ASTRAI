@@ -22,8 +22,14 @@ import matplotlib.pyplot as plt
 from astrai.utils.augmentation import apply_lsst_pipeline
 from astrai.utils.checkpoints import load_unified_model
 from astrai.utils.configuration import load_config
+from astrai.utils.data import load_raw_data
 from astrai.utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
-from astrai.cli.inference import load_data, load_model
+from astrai.utils.target_transformations import (
+    physical_to_transformed,
+    scaled_to_physical,
+    scaled_to_transformed,
+)
+from astrai.cli.inference import load_model
 from astrai.paths import resolve_config_path
 
 
@@ -121,11 +127,13 @@ def plot_single(
     )[0]
 
     # Print parameters
-    pred_params = y_scaler.inverse_transform(pred_params_sc[idx : idx + 1])[0]
-    pred_params_original = np.expm1(pred_params)
+    pred_params_original = scaled_to_physical(
+        pred_params_sc[idx : idx + 1],
+        y_scaler,
+    )[0]
 
     char_rmse_str = (
-        f"Char RMSE: {per_sample_char_rmse[idx]:.6f}"
+        f"Char RMSE (transformed): {per_sample_char_rmse[idx]:.6f}"
         if per_sample_char_rmse is not None
         else ""
     )
@@ -134,8 +142,7 @@ def plot_single(
     for i, name in enumerate(param_names):
         line = f"  {name}: {pred_params_original[i]:.4f}"
         if y is not None:
-            true_params_original = np.expm1(y[idx])
-            line += f"  (true: {true_params_original[i]:.4f})"
+            line += f"  (true: {y[idx, i]:.4f})"
         print(line)
 
     # Plot
@@ -143,7 +150,10 @@ def plot_single(
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
     title = f"Sample {idx}"
     if per_sample_char_rmse is not None:
-        title += f" — Characterization RMSE: {per_sample_char_rmse[idx]:.6f}"
+        title += (
+            " — Characterization RMSE (transformed): "
+            f"{per_sample_char_rmse[idx]:.6f}"
+        )
     fig.suptitle(title, fontsize=13)
 
     # Compute shared y-axis limits from data with some padding
@@ -264,7 +274,7 @@ def main(argv=None):
         model, x_scaler, y_scaler, pca = load_model(cfg, device)
 
     # Load data
-    x, y = load_data(cfg["data"].get("path"), cfg)
+    x, y_physical = load_raw_data(cfg["data"].get("path"), cfg)
 
     # Reconstruct all samples
     print("Computing reconstruction for all samples...")
@@ -274,9 +284,18 @@ def main(argv=None):
 
     # Compute per-sample characterization RMSE (predicted vs true params)
     per_sample_char_rmse = None
-    if y is not None:
-        pred_params = y_scaler.inverse_transform(pred_params_sc)
-        per_sample_char_rmse = np.sqrt(np.mean((y - pred_params) ** 2, axis=1))
+    if y_physical is not None:
+        y_transformed = physical_to_transformed(y_physical, cfg)
+        pred_params_transformed = scaled_to_transformed(
+            pred_params_sc,
+            y_scaler,
+        )
+        per_sample_char_rmse = np.sqrt(
+            np.mean(
+                (y_transformed - pred_params_transformed) ** 2,
+                axis=1,
+            )
+        )
 
     # Select which samples to plot
     if args.top is not None:
@@ -286,10 +305,14 @@ def main(argv=None):
             )
             return
         top_indices = np.argsort(per_sample_char_rmse)[: args.top]
-        print(f"\nTop {args.top} samples with lowest characterization RMSE:")
+        print(
+            f"\nTop {args.top} samples with lowest transformed-space "
+            "characterization RMSE:"
+        )
         for rank, idx in enumerate(top_indices, 1):
             print(
-                f"  #{rank}: sample {idx}, Char RMSE = {per_sample_char_rmse[idx]:.6f}"
+                f"  #{rank}: sample {idx}, transformed Char RMSE = "
+                f"{per_sample_char_rmse[idx]:.6f}"
             )
         indices_to_plot = top_indices
     else:
@@ -300,7 +323,7 @@ def main(argv=None):
         plot_single(
             idx,
             x,
-            y,
+            y_physical,
             model_reconstructed,
             x_scaler,
             pca,

@@ -5,6 +5,7 @@ import numpy as np
 from astrai.utils.metrics import (
     METRIC_NAMES,
     compute_parameter_metrics,
+    compute_target_metrics,
 )
 from astrai.utils.parameter_validation import validate_parameter_names
 
@@ -166,6 +167,22 @@ class ParameterMetricTests(unittest.TestCase):
                 self.pred,
                 ["Mass"],
             )
+
+    def test_target_metrics_keep_aggregate_in_transformed_space(self):
+        true_physical = np.array([[0.0, 1.0], [1.0, 3.0], [3.0, 7.0]])
+        pred_physical = np.array([[0.0, 1.5], [1.5, 2.5], [2.5, 8.0]])
+        result = compute_target_metrics(
+            np.log1p(true_physical),
+            np.log1p(pred_physical),
+            ["Mass", "Energy"],
+        )
+
+        self.assertIn("aggregate", result["transformed"])
+        self.assertNotIn("aggregate", result["physical"])
+        self.assertEqual(
+            tuple(result["physical"]["per_parameter"]),
+            ("Mass", "Energy"),
+        )
 
 
 if __name__ == "__main__":

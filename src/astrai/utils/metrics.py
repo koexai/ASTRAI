@@ -7,6 +7,7 @@ All functions operate on NumPy arrays and follow the convention
 import numpy as np
 
 from astrai.utils.parameter_validation import validate_parameter_names
+from astrai.utils.target_transformations import transformed_to_physical
 
 
 METRIC_NAMES = ("RMSE", "RRMSE", "MAE", "R2")
@@ -115,6 +116,31 @@ def compute_parameter_metrics(true, pred, param_names):
     return {
         "aggregate": aggregate,
         "per_parameter": per_parameter,
+    }
+
+
+def compute_target_metrics(true_transformed, pred_transformed, param_names, cfg=None):
+    """Report characterisation metrics in explicit target spaces.
+
+    Aggregate metrics retain the historical transformed-space methodology.
+    Physical-space metrics are reported per parameter because their units and
+    scales are heterogeneous and should not be averaged together.
+    """
+    transformed = compute_parameter_metrics(
+        true_transformed,
+        pred_transformed,
+        param_names,
+    )
+    physical = compute_parameter_metrics(
+        transformed_to_physical(true_transformed, cfg),
+        transformed_to_physical(pred_transformed, cfg),
+        param_names,
+    )
+    return {
+        "transformed": transformed,
+        "physical": {
+            "per_parameter": physical["per_parameter"],
+        },
     }
 
 

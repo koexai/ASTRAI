@@ -26,7 +26,8 @@ import numpy as np
 import torch
 
 from astrai.cli.inference_split import generate
-from astrai.utils.checkpoints import load_config, load_data, load_generator
+from astrai.utils.checkpoints import load_config, load_generator
+from astrai.utils.data import load_raw_data
 
 
 def parse_args(argv=None):
@@ -146,10 +147,16 @@ def repeat_rows(values, size):
     return np.tile(values, (repetitions, 1))[:size]
 
 
-def timed_generation(model_bundle, parameters, device):
+def timed_generation(model_bundle, parameters, device, cfg=None):
     synchronize(device)
     start_ns = time.perf_counter_ns()
-    generated = generate(model_bundle[0], parameters, *model_bundle[1:], device)
+    generated = generate(
+        model_bundle[0],
+        parameters,
+        *model_bundle[1:],
+        device,
+        cfg,
+    )
     synchronize(device)
     elapsed_seconds = (time.perf_counter_ns() - start_ns) / 1e9
     return elapsed_seconds, generated
@@ -201,7 +208,7 @@ def main(argv=None):
     model_bundle = load_generator(cfg, device, args.exp_gen)
     model_bundle[0].eval()
 
-    _, labels = load_data(args.data, cfg)
+    _, labels = load_raw_data(args.data, cfg)
     validate_labels(labels)
 
     print(f"Platform: {platform.platform()}")
@@ -231,7 +238,7 @@ def main(argv=None):
         warmup_output = None
         for _ in range(args.warmup):
             _, warmup_output = timed_generation(
-                model_bundle, warmup_parameters, device
+                model_bundle, warmup_parameters, device, cfg
             )
         if not np.isfinite(warmup_output).all():
             raise RuntimeError("Warm-up produced non-finite values")
@@ -244,7 +251,7 @@ def main(argv=None):
 
         for _ in range(args.repeats):
             elapsed_seconds, generated = timed_generation(
-                model_bundle, parameters, device
+                model_bundle, parameters, device, cfg
             )
             timings.append(elapsed_seconds)
 

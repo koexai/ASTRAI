@@ -24,42 +24,54 @@ from astrai.utils.checkpoints import (
     load_config,
     load_characterizer,
     load_generator,
-    load_data,
 )
+from astrai.utils.data import load_raw_data
 from astrai.utils.metrics import (
     get_rmse,
     get_mae,
     get_r_squared,
     get_rrmse,
     compute_metrics,
+    compute_target_metrics,
+)
+from astrai.utils.target_transformations import (
+    physical_to_scaled,
+    physical_to_transformed,
+    scaled_to_physical,
+    scaled_to_transformed,
+    validate_parameter_scalers,
 )
 from astrai.paths import resolve_config_path
 
 
-def characterize(model, x, x_scaler, y_scaler, pca, device):
-    """Curves -> predicted physical parameters.
-    x: (n_samples, n_timepoints)
-    Returns: (n_samples, n_params)  with inverse scaling applied.
-    """
+def characterize_scaled(model, x, x_scaler, pca, device):
+    """Curves -> predicted parameters in scaled model space."""
     x_scaled = x_scaler.transform(x)
     x_pca = pca.transform(x_scaled)
 
     with torch.no_grad():
-        pred_sc = model(torch.FloatTensor(x_pca).to(device)).cpu().numpy()
-
-    return y_scaler.inverse_transform(pred_sc)
+        return model(torch.FloatTensor(x_pca).to(device)).cpu().numpy()
 
 
-def generate(model, y, x_scaler, y_scaler, pca, device):
-    """Parameters -> predicted light curves.
-    y: (n_samples, n_params)
-    Returns: (n_samples, n_timepoints) with inverse PCA and scaling applied."""
-    y_scaled = y_scaler.transform(y)
+def characterize(model, x, x_scaler, y_scaler, pca, device, cfg=None):
+    """Curves -> predicted parameters in physical space."""
+    pred_scaled = characterize_scaled(model, x, x_scaler, pca, device)
+    return scaled_to_physical(pred_scaled, y_scaler, cfg)
 
+
+def generate_from_scaled(model, y_scaled, x_scaler, pca, device):
+    """Scaled model parameters -> predicted light curves."""
     with torch.no_grad():
         pred_pca = model(torch.FloatTensor(y_scaled).to(device)).cpu().numpy()
-
     return x_scaler.inverse_transform(pca.inverse_transform(pred_pca))
+
+
+def generate(model, y, x_scaler, y_scaler, pca, device, cfg=None):
+    """Parameters -> predicted light curves.
+    y: physical parameters with shape (n_samples, n_params)
+    Returns: (n_samples, n_timepoints) with inverse PCA and scaling applied."""
+    y_scaled = physical_to_scaled(y, y_scaler, cfg)
+    return generate_from_scaled(model, y_scaled, x_scaler, pca, device)
 
 
 def print_metrics(name, metrics):
@@ -73,13 +85,18 @@ def print_metrics(name, metrics):
             print(f"  {k}: {v:.6f}")
 
 
-def _bootstrap_per_parameter(y, pred_params, param_names, n_boot=100, seed=42):
+def _bootstrap_per_parameter(
+    y, pred_params, param_names, space, n_boot=100, seed=42
+):
     """Print per-parameter bootstrap confidence intervals.
     For each parameter, resample the true and predicted values with replacement
     and compute metrics on each resample to get a distribution of metric values.
     """
     rng = np.random.default_rng(seed)
-    print(f"\n  Per-parameter metrics (+/- from {n_boot} bootstrap resamples):")
+    print(
+        f"\n  Per-parameter metrics ({space} space; "
+        f"+/- from {n_boot} bootstrap resamples):"
+    )
     print(
         f"  {'Parameter':<12} {'R2':>19} {'RMSE':>19} {'RRMSE':>19} {'MAE':>19}"
     )
@@ -155,8 +172,8 @@ def main(argv=None):
     n_params = cfg["data"]["n_params"]
     param_names = cfg["data"]["param_names"]
 
-    x, y = load_data(args.data, cfg)
-    has_labels = y is not None
+    x, y_physical = load_raw_data(args.data, cfg)
+    has_labels = y_physical is not None
     print(f"Loaded {len(x)} samples, labels: {'yes' if has_labels else 'no'}")
 
     # --- Characterization ---
@@ -168,12 +185,34 @@ def main(argv=None):
         )
 
         print(f"Running characterization ({len(x)} samples)...")
-        pred_params = characterize(char_model, x, cx_sc, cy_sc, c_pca, device)
+        pred_scaled = characterize_scaled(char_model, x, cx_sc, c_pca, device)
+        pred_transformed = scaled_to_transformed(pred_scaled, cy_sc)
+        pred_params = scaled_to_physical(pred_scaled, cy_sc, cfg)
 
         if has_labels:
-            char_metrics = compute_metrics(y, pred_params, n_cols=n_params)
-            print_metrics("CHARACTERIZATION (averaged)", char_metrics)
-            _bootstrap_per_parameter(y, pred_params, param_names)
+            y_transformed = physical_to_transformed(y_physical, cfg)
+            char_metrics = compute_target_metrics(
+                y_transformed,
+                pred_transformed,
+                param_names,
+                cfg,
+            )
+            print_metrics(
+                "CHARACTERIZATION (transformed-space aggregate)",
+                char_metrics["transformed"]["aggregate"],
+            )
+            _bootstrap_per_parameter(
+                y_transformed,
+                pred_transformed,
+                param_names,
+                "transformed",
+            )
+            _bootstrap_per_parameter(
+                y_physical,
+                pred_params,
+                param_names,
+                "physical",
+            )
     else:
         print(
             "\nNo characterizer experiment dir provided, skipping characterization."
@@ -183,9 +222,23 @@ def main(argv=None):
     if gen_dir and has_labels:
         print(f"\nLoading generator from: {gen_dir}")
         gen_model, gx_sc, gy_sc, g_pca = load_generator(cfg, device, gen_dir)
+        if char_dir:
+            validate_parameter_scalers(
+                cy_sc,
+                gy_sc,
+                context="characterizer output and generator input scaling",
+            )
 
-        print(f"Running generation ({len(y)} samples)...")
-        pred_curves = generate(gen_model, y, gx_sc, gy_sc, g_pca, device)
+        print(f"Running generation ({len(y_physical)} samples)...")
+        pred_curves = generate(
+            gen_model,
+            y_physical,
+            gx_sc,
+            gy_sc,
+            g_pca,
+            device,
+            cfg,
+        )
 
         gen_metrics = compute_metrics(x, pred_curves)
         print_metrics("GENERATION", gen_metrics)
@@ -203,7 +256,7 @@ def main(argv=None):
         )
         if has_labels:
             for i, p in enumerate(param_names):
-                results[f"true_{p}"] = y[:, i]
+                results[f"true_{p}"] = y_physical[:, i]
         results.to_parquet(args.output)
         print(f"\nPredictions saved to: {args.output}")
 

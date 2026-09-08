@@ -21,8 +21,15 @@ import numpy as np
 import torch
 
 from astrai.utils.augmentation import apply_lsst_pipeline
-from astrai.utils.array_dtypes import load_model_array
+from astrai.utils.array_dtypes import as_model_array, load_model_array
 from astrai.utils.checkpoints import load_config, load_characterizer, load_generator
+from astrai.utils.target_transformations import (
+    load_fold_target_array,
+    target_transform_contract,
+    validate_parameter_scalers,
+    validate_preprocessing_target_contract,
+    validate_target_contract_compatibility,
+)
 
 
 _SAMPLE_DIAGNOSTIC_HEADER = (
@@ -81,7 +88,16 @@ def _config_value(cfg, path):
 def load_experiment_config(exp_dir):
     """Load the single YAML configuration in an experiment directory."""
     exp_path = Path(exp_dir)
-    config_paths = sorted(exp_path.glob("*.yaml"))
+    canonical_path = exp_path / "config.yaml"
+    if canonical_path.is_file():
+        return load_config(canonical_path), canonical_path
+
+    metadata_names = {"metadata.yaml", "preprocessing_metadata.yaml"}
+    config_paths = [
+        path
+        for path in sorted(exp_path.glob("*.yaml"))
+        if path.name not in metadata_names
+    ]
     config_paths.extend(sorted(exp_path.glob("*.yml")))
 
     if len(config_paths) != 1:
@@ -115,6 +131,12 @@ def validate_experiment_configs(char_cfg, gen_cfg):
             f"  - {details}"
         )
 
+    validate_target_contract_compatibility(
+        target_transform_contract(char_cfg),
+        target_transform_contract(gen_cfg),
+        context="characterizer and generator configurations",
+    )
+
 
 def validate_shared_parameter_scaling(
     char_y_scaler,
@@ -122,67 +144,30 @@ def validate_shared_parameter_scaling(
 ):
     """Ensure PPReg outputs and LCGen inputs use the same scaling.
 
-    PPReg predicts physical parameters in standardised ``y`` space,
+    PPReg predicts transformed parameters in standardised ``y`` space,
     while LCGen consumes parameters in that same space. Different
     scalers are therefore considered an incompatible pipeline rather
     than being converted automatically.
     """
-    if type(char_y_scaler) is not type(gen_y_scaler):
-        raise ValueError(
-            "Incompatible parameter scaling: the characterizer and "
-            "generator use different scaler types."
-        )
-
-    for attribute in ("mean_", "scale_"):
-        if not hasattr(char_y_scaler, attribute):
-            raise ValueError(
-                "The characterizer parameter scaler does not expose "
-                f"{attribute}."
-            )
-
-        if not hasattr(gen_y_scaler, attribute):
-            raise ValueError(
-                "The generator parameter scaler does not expose "
-                f"{attribute}."
-            )
-
-        char_value = np.asarray(
-            getattr(char_y_scaler, attribute),
-            dtype=float,
-        )
-        gen_value = np.asarray(
-            getattr(gen_y_scaler, attribute),
-            dtype=float,
-        )
-
-        if (
-            char_value.shape != gen_value.shape
-            or not np.allclose(
-                char_value,
-                gen_value,
-                rtol=1e-12,
-                atol=1e-12,
-                equal_nan=False,
-            )
-        ):
-            raise ValueError(
-                "Incompatible parameter scaling: characterizer output "
-                f"and generator input {attribute} values differ."
-            )
+    validate_parameter_scalers(
+        char_y_scaler,
+        gen_y_scaler,
+        context="characterizer output and generator input scaling",
+    )
 
 
 def validate_scaled_parameter_artifact(
-    y_test,
+    y_test_transformed,
     y_test_scaled,
     parameter_scaler,
 ):
     """Ensure the stored scaled parameters match the shared scaler."""
-    if y_test.shape != y_test_scaled.shape:
+    if y_test_transformed.shape != y_test_scaled.shape:
         raise ValueError(
-            "y_test and y_test_scaled must have the same shape."
+            "y_test_transformed and y_test_scaled must have the same shape."
         )
 
-    expected_y_test_scaled = parameter_scaler.transform(y_test)
+    expected_y_test_scaled = parameter_scaler.transform(y_test_transformed)
 
     if not np.allclose(
         y_test_scaled,
@@ -407,7 +392,7 @@ def save_reconstruction_error_csv(
 def generate_curves(y_scaled, gen_model, gen_x_scaler, gen_pca, device):
     """Generate curves in the original light-curve space.
 
-    ``y_scaled`` contains standardised physical parameters. The generator
+    ``y_scaled`` contains standardised transformed parameters. The generator
     predicts PCA coefficients in scaled light-curve space; ``gen_pca`` and
     ``gen_x_scaler`` then decode those predictions into light curves.
     """
@@ -571,7 +556,7 @@ def compute_chargen_rmse(
     """Return full-pipeline RMSE per timestep against clean targets.
 
     The characterizer consumes ``x_test_aug`` and predicts standardised
-    physical parameters. The generator maps those parameters back to PCA
+    transformed parameters. The generator maps those parameters back to PCA
     coefficients in scaled light-curve space. ``gen_pca`` and
     ``gen_x_scaler`` decode the generator output into reconstructed curves.
     """
@@ -604,7 +589,7 @@ def plot_reconstruction_error(
 
     The three scenarios are:
 
-    1. Generator supplied with the true scaled physical parameters.
+    1. Generator supplied with the true scaled transformed parameters.
     2. Full PPReg-LCGen pipeline supplied with clean light curves.
     3. Full PPReg-LCGen pipeline supplied with augmented light curves.
     """
@@ -756,6 +741,7 @@ def main(argv=None):
     gen_cfg, gen_config_path = load_experiment_config(args.exp_gen)
 
     validate_experiment_configs(char_cfg, gen_cfg)
+    validate_preprocessing_target_contract(args.prep, char_cfg)
 
     diagnostic_fold = resolve_diagnostic_fold(
         char_cfg,
@@ -802,7 +788,6 @@ def main(argv=None):
 
     required_artifacts = {
         "x_test_clean": fold_dir / "x_test_clean.npy",
-        "y_test": fold_dir / "y_test.npy",
         "y_test_scaled": fold_dir / "y_test_scaled.npy",
     }
     missing_artifacts = [
@@ -820,7 +805,13 @@ def main(argv=None):
         )
 
     x_test_clean = load_model_array(required_artifacts["x_test_clean"])
-    y_test = load_model_array(required_artifacts["y_test"])
+    y_test_transformed = as_model_array(
+        load_fold_target_array(
+            fold_dir,
+            "y_test_transformed.npy",
+            legacy_name="y_test.npy",
+        )
+    )
     y_test_scaled = load_model_array(required_artifacts["y_test_scaled"])
 
     if x_test_clean.ndim != 2 or x_test_clean.shape[1] != n_days:
@@ -835,24 +826,28 @@ def main(argv=None):
             f"{y_test_scaled.shape}; expected (n_samples, {n_params})."
         )
 
-    if y_test.ndim != 2 or y_test.shape[1] != n_params:
+    if (
+        y_test_transformed.ndim != 2
+        or y_test_transformed.shape[1] != n_params
+    ):
         raise ValueError(
-            "Unexpected y_test shape: "
-            f"{y_test.shape}; expected (n_samples, {n_params})."
+            "Unexpected y_test_transformed shape: "
+            f"{y_test_transformed.shape}; expected "
+            f"(n_samples, {n_params})."
         )
 
     if not (
         x_test_clean.shape[0]
-        == y_test.shape[0]
+        == y_test_transformed.shape[0]
         == y_test_scaled.shape[0]
     ):
         raise ValueError(
-            "x_test_clean, y_test, and y_test_scaled contain different "
+            "x_test_clean, y_test_transformed, and y_test_scaled contain different "
             "numbers of samples."
         )
 
     validate_scaled_parameter_artifact(
-        y_test,
+        y_test_transformed,
         y_test_scaled,
         char_y_scaler,
     )

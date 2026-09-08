@@ -128,7 +128,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
                 ),
                 patch.object(
                     preprocess,
-                    "load_data",
+                    "load_raw_data",
                     return_value=(x_raw, y_raw),
                 ),
                 redirect_stdout(StringIO()),
@@ -164,7 +164,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 first_metadata["preprocessing_artefact_schema_version"],
-                4,
+                5,
             )
             self.assertEqual(
                 load(first_dir / "pca.pkl").random_state,

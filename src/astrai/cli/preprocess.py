@@ -33,14 +33,19 @@ from astrai.utils.array_dtypes import (
     as_index_array,
     as_model_array,
 )
-from astrai.utils.checkpoints import load_data
 from astrai.utils.configuration import load_config
+from astrai.utils.data import load_raw_data
 from astrai.utils.log_experiments import save_code
 from astrai.utils.reproducibility import (
     build_preprocessing_seed_plan,
     make_numpy_rng,
 )
 from astrai.utils.runtime_environment import capture_runtime_environment
+from astrai.utils.target_transformations import (
+    PREPROCESSING_ARTEFACT_SCHEMA_VERSION,
+    physical_to_transformed,
+    target_transform_contract,
+)
 from astrai.paths import (
     resolve_config_path,
     source_checkout_root,
@@ -53,7 +58,7 @@ _REPOSITORY_ROOT = _SOURCE_CHECKOUT_ROOT or source_snapshot_root()
 _DEFAULT_RUNS_DIR = Path("preprocessed")
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _METADATA_NAME = "metadata.yaml"
-_ARTEFACT_SCHEMA_VERSION = 4
+_ARTEFACT_SCHEMA_VERSION = PREPROCESSING_ARTEFACT_SCHEMA_VERSION
 
 
 def _utc_now():
@@ -220,6 +225,7 @@ def _initial_metadata(cfg, started_at, repository_root):
             "model": MODEL_ARRAY_DTYPE.name,
             "indices": INDEX_ARRAY_DTYPE.name,
         },
+        "target_transform": target_transform_contract(cfg),
         "array_artefacts": {},
         "git": _git_metadata(repository_root),
         "environment": capture_runtime_environment(),
@@ -228,7 +234,7 @@ def _initial_metadata(cfg, started_at, repository_root):
 
 def _fit_global_artifacts(
     x_raw,
-    y_raw,
+    y_transformed,
     n_pca,
     out_dir,
     random_state,
@@ -239,8 +245,8 @@ def _fit_global_artifacts(
     ----------
     x_raw : np.ndarray
         Raw input curves, shape (n_samples, n_days).
-    y_raw : np.ndarray
-        Raw parameters, shape (n_samples, n_params).
+    y_transformed : np.ndarray
+        Parameters in canonical model target space.
     n_pca : int
         Number of PCA components to keep.
     out_dir : str
@@ -253,7 +259,7 @@ def _fit_global_artifacts(
     x_scaler.fit(x_raw)
 
     y_scaler = StandardScaler()
-    y_scaler.fit(y_raw)
+    y_scaler.fit(y_transformed)
 
     pca = PCA(n_components=n_pca, random_state=random_state)
     pca.fit(x_scaler.transform(x_raw))
@@ -272,7 +278,8 @@ def _fit_global_artifacts(
 def _process_fold(
     fold_idx,
     x_raw,
-    y_raw,
+    y_physical,
+    y_transformed,
     train_idx,
     test_idx,
     x_scaler,
@@ -292,8 +299,10 @@ def _process_fold(
         Index of the current fold (1-based).
         x_raw : np.ndarray
         Raw input curves, shape (n_samples, n_days).
-        y_raw : np.ndarray
-        Raw parameters, shape (n_samples, n_params).
+        y_physical : np.ndarray
+        Parameters in physical space, shape (n_samples, n_params).
+        y_transformed : np.ndarray
+        Parameters in canonical model target space.
         train_idx : np.ndarray
         Indices for training samples in this fold.
         test_idx : np.ndarray
@@ -320,8 +329,9 @@ def _process_fold(
 
     x_train_clean = x_raw[train_idx]
     x_test_clean = x_raw[test_idx]
-    y_train = y_raw[train_idx]
-    y_test = y_raw[test_idx]
+    y_train_transformed = y_transformed[train_idx]
+    y_test_transformed = y_transformed[test_idx]
+    y_test_physical = y_physical[test_idx]
 
     _save_index_array(os.path.join(fold_dir, "train_idx.npy"), train_idx)
     _save_index_array(os.path.join(fold_dir, "test_idx.npy"), test_idx)
@@ -339,8 +349,8 @@ def _process_fold(
     x_train_aug_pca = pca.transform(x_scaler.transform(x_train_aug))
     x_test_pca = pca.transform(x_scaler.transform(x_test_clean))
 
-    y_train_scaled = y_scaler.transform(y_train)
-    y_test_scaled = y_scaler.transform(y_test)
+    y_train_scaled = y_scaler.transform(y_train_transformed)
+    y_test_scaled = y_scaler.transform(y_test_transformed)
 
     model_arrays = {
         "x_train_clean_pca.npy": x_train_clean_pca,
@@ -348,7 +358,8 @@ def _process_fold(
         "x_test_pca.npy": x_test_pca,
         "y_train_scaled.npy": y_train_scaled,
         "y_test_scaled.npy": y_test_scaled,
-        "y_test.npy": y_test,
+        "y_test_transformed.npy": y_test_transformed,
+        "y_test_physical.npy": y_test_physical,
         "x_test_clean.npy": x_test_clean,
     }
     for filename, values in model_arrays.items():
@@ -370,19 +381,28 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
     )
 
     print("Loading data...")
-    x_raw, y_raw = load_data(None, cfg)
-    y_raw = np.log1p(y_raw)
+    x_raw, y_physical = load_raw_data(None, cfg)
+    if y_physical is None:
+        raise ValueError("Preprocessing requires physical parameter labels")
+    y_transformed = physical_to_transformed(y_physical, cfg)
 
     x_scaler, y_scaler, pca = _fit_global_artifacts(
         x_raw,
-        y_raw,
+        y_transformed,
         n_pca,
         out_dir,
         random_state=seed_plan["pca"],
     )
 
     _save_model_array(os.path.join(out_dir, "x_raw.npy"), x_raw)
-    _save_model_array(os.path.join(out_dir, "y_raw.npy"), y_raw)
+    _save_model_array(
+        os.path.join(out_dir, "y_physical.npy"),
+        y_physical,
+    )
+    _save_model_array(
+        os.path.join(out_dir, "y_transformed.npy"),
+        y_transformed,
+    )
 
     kf = KFold(
         n_splits=n_splits,
@@ -395,7 +415,8 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
         _process_fold(
             fold_idx,
             x_raw,
-            y_raw,
+            y_physical,
+            y_transformed,
             train_idx,
             test_idx,
             x_scaler,

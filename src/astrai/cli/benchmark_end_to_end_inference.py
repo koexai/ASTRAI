@@ -24,13 +24,17 @@ import time
 import numpy as np
 import torch
 
-from astrai.cli.inference_split import characterize, generate
+from astrai.cli.inference_split import (
+    characterize_scaled,
+    generate_from_scaled,
+)
 from astrai.utils.checkpoints import (
     load_characterizer,
     load_config,
-    load_data,
     load_generator,
 )
+from astrai.utils.data import load_raw_data
+from astrai.utils.target_transformations import validate_parameter_scalers
 
 
 def parse_args(argv=None):
@@ -145,8 +149,13 @@ def main(argv=None):
     )
     char_model.eval()
     gen_model.eval()
+    validate_parameter_scalers(
+        char_y_scaler,
+        gen_y_scaler,
+        context="characterizer output and generator input scaling",
+    )
 
-    x, _ = load_data(args.data, cfg)
+    x, _ = load_raw_data(args.data, cfg)
     validate_sample_index(args.sample_index, len(x))
     x_obs = x[args.sample_index : args.sample_index + 1]
 
@@ -154,11 +163,10 @@ def main(argv=None):
         synchronize(device)
         start_ns = time.perf_counter_ns()
 
-        pred_params = characterize(
+        pred_params_scaled = characterize_scaled(
             char_model,
             x_obs,
             char_x_scaler,
-            char_y_scaler,
             char_pca,
             device,
         )
@@ -166,11 +174,10 @@ def main(argv=None):
         synchronize(device)
         after_ppreg_ns = time.perf_counter_ns()
 
-        lc_rec = generate(
+        lc_rec = generate_from_scaled(
             gen_model,
-            pred_params,
+            pred_params_scaled,
             gen_x_scaler,
-            gen_y_scaler,
             gen_pca,
             device,
         )
