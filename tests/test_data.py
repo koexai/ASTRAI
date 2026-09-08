@@ -108,6 +108,38 @@ class RawDataLoadingTests(unittest.TestCase):
                 [[10.0, 1.0], [20.0, 2.0]],
             )
 
+    def test_legacy_loader_applies_one_transform_to_parquet_targets(self):
+        from astrai.utils.checkpoints import load_data
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            parquet_path = Path(tmp_dir) / "dataset.parquet"
+            frame = pd.DataFrame(
+                {
+                    "0": [1.0, 2.0],
+                    "1": [3.0, 4.0],
+                    "Mass": [0.0, 10.0],
+                    "Energy": [1.0, 2.0],
+                }
+            )
+            frame.to_parquet(parquet_path, index=False)
+            cfg = {
+                "data": {
+                    "format": "parquet",
+                    "path": str(parquet_path),
+                    "target_transform": "log1p",
+                    "n_days": 2,
+                    "n_params": 2,
+                    "param_names": ["Mass", "Energy"],
+                }
+            }
+
+            _, transformed = load_data(None, cfg)
+
+        np.testing.assert_allclose(
+            transformed,
+            np.log1p(frame[["Mass", "Energy"]].to_numpy()),
+        )
+
     def test_rejects_mismatched_npy_csv_sample_counts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

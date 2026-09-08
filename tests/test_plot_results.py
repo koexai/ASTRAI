@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from astrai.utils.plot_results import (
+    load_experiment_config,
     resolve_diagnostic_fold,
     save_reconstruction_error_csv,
     save_sample_diagnostic_csv,
@@ -56,6 +57,24 @@ class DummyParameterScaler:
 
 
 class DiagnosticConfigurationTests(unittest.TestCase):
+    def test_loads_canonical_config_alongside_metadata_snapshots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "config.yaml").write_text(
+                "data:\n  target_transform: log1p\n",
+                encoding="utf-8",
+            )
+            (root / "metadata.yaml").write_text("run: {}\n", encoding="utf-8")
+            (root / "preprocessing_metadata.yaml").write_text(
+                "run: {}\n",
+                encoding="utf-8",
+            )
+
+            config, path = load_experiment_config(root)
+
+        self.assertEqual(config["data"]["target_transform"], "log1p")
+        self.assertEqual(path.name, "config.yaml")
+
     def test_accepts_legacy_characterizer_fold_override(self):
         char_cfg = make_config()
         gen_cfg = make_config()

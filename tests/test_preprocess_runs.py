@@ -103,8 +103,9 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["preprocessing_artefact_schema_version"],
-                4,
+                5,
             )
+            self.assertEqual(metadata["target_transform"]["name"], "log1p")
             self.assertEqual(metadata["run"]["status"], "completed")
             self.assertIsNotNone(metadata["run"]["completed_at_utc"])
             self.assertEqual(metadata["config"]["snapshot"], "config.yaml")
@@ -315,7 +316,8 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
 
     def test_process_fold_persists_model_and_index_contracts(self):
         x_raw = np.arange(20, dtype=np.float32).reshape(5, 4)
-        y_raw = np.arange(10, dtype=np.float32).reshape(5, 2)
+        y_physical = np.arange(10, dtype=np.float32).reshape(5, 2)
+        y_transformed = np.log1p(y_physical)
         train_idx = np.array([0, 1, 2], dtype=np.int32)
         test_idx = np.array([3, 4], dtype=np.int32)
         augmented = x_raw[train_idx].astype(np.float64) + 0.125
@@ -329,7 +331,8 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
                 preprocess._process_fold(
                     fold_idx=1,
                     x_raw=x_raw,
-                    y_raw=y_raw,
+                    y_physical=y_physical,
+                    y_transformed=y_transformed,
                     train_idx=train_idx,
                     test_idx=test_idx,
                     x_scaler=self.IdentityTransformer(),
@@ -349,7 +352,8 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
                 "x_test_pca.npy",
                 "y_train_scaled.npy",
                 "y_test_scaled.npy",
-                "y_test.npy",
+                "y_test_transformed.npy",
+                "y_test_physical.npy",
                 "x_test_clean.npy",
             )
             for name in model_names:
@@ -364,11 +368,64 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
                         np.load(fold_dir / name).dtype,
                         np.dtype(np.int64),
                     )
+            self.assertFalse((fold_dir / "y_test.npy").exists())
 
             np.testing.assert_array_equal(
                 np.load(fold_dir / "x_train_aug_pca.npy"),
                 augmented.astype(np.float32),
             )
+
+    def test_generation_applies_the_target_transform_once(self):
+        cfg = {
+            "data": {
+                "target_transform": "log1p",
+                "n_days": 2,
+                "samples_per_day": 1,
+            },
+            "augmentation": {"noise_std": 0.05},
+            "preprocessing": {
+                "pca_components": 1,
+                "n_splits": 2,
+                "random_seed": 42,
+            },
+        }
+        x_raw = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+        y_physical = np.array([[0.0, 10.0], [1.0, 20.0]], dtype=np.float32)
+        identity = self.IdentityTransformer()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    preprocess,
+                    "load_raw_data",
+                    return_value=(x_raw, y_physical),
+                ),
+                patch.object(
+                    preprocess,
+                    "_fit_global_artifacts",
+                    return_value=(identity, identity, identity),
+                ) as fit,
+                patch.object(preprocess, "_process_fold") as process,
+            ):
+                preprocess._generate_preprocessing_artefacts(cfg, temp_dir)
+
+            expected = np.log1p(y_physical)
+            np.testing.assert_allclose(
+                fit.call_args.args[1],
+                expected,
+            )
+            np.testing.assert_allclose(
+                np.load(Path(temp_dir) / "y_physical.npy"),
+                y_physical,
+            )
+            np.testing.assert_allclose(
+                np.load(Path(temp_dir) / "y_transformed.npy"),
+                expected,
+            )
+            self.assertFalse((Path(temp_dir) / "y_raw.npy").exists())
+            for call in process.call_args_list:
+                np.testing.assert_allclose(call.args[2], y_physical)
+                np.testing.assert_allclose(call.args[3], expected)
 
 
 if __name__ == "__main__":

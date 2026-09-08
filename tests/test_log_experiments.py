@@ -112,8 +112,15 @@ class ExperimentRunTests(unittest.TestCase):
             (prep_dir / "metadata.yaml").write_text(
                 yaml.safe_dump(
                     {
-                        "preprocessing_artefact_schema_version": 3,
+                        "preprocessing_artefact_schema_version": 5,
                         "run": {"status": "completed"},
+                        "target_transform": {
+                            "name": "log1p",
+                            "version": 1,
+                            "input_space": "physical",
+                            "model_space": "transformed",
+                            "physical_domain": "non_negative",
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -152,7 +159,7 @@ class ExperimentRunTests(unittest.TestCase):
                 (run_dir / "config.yaml").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(metadata["experiment_metadata_version"], 2)
+        self.assertEqual(metadata["experiment_metadata_version"], 3)
         self.assertEqual(metadata["run"]["status"], "completed")
         self.assertEqual(metadata["run"]["stage"], "characterizer")
         self.assertEqual(metadata["run"]["pipeline_run_id"], "pipeline-123")
@@ -175,7 +182,14 @@ class ExperimentRunTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            metadata["preprocessing"]["artefact_schema_version"], 3
+            metadata["preprocessing"]["artefact_schema_version"], 5
+        )
+        self.assertEqual(metadata["data"]["target_transform"]["name"], "log1p")
+        self.assertEqual(
+            metadata["results"]["metric_spaces"]["characterization"][
+                "aggregate"
+            ],
+            "transformed",
         )
         self.assertEqual(metadata["checkpoint"]["best_fold"], 1)
         self.assertEqual(metadata["checkpoint"]["best_score"], 0.75)

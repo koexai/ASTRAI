@@ -18,6 +18,7 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
             "data": {
                 "n_days": 6,
                 "n_params": 2,
+                "param_names": ["Mass", "Energy"],
                 "samples_per_day": 1,
             },
             "model": {
@@ -65,7 +66,7 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
             patch.object(train, "load_config", return_value=self.cfg),
             patch.object(
                 train,
-                "load_data",
+                "load_raw_data",
                 return_value=(self.x_raw, self.y_raw),
             ),
             patch.object(

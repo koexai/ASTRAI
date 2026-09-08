@@ -86,15 +86,16 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
                 ("Mass", "Energy"),
                 "/tmp/preprocessed",
                 torch.device("cpu"),
+                {"data": {"target_transform": "log1p"}},
             )
 
         self.assertTrue(model.evaluation_mode)
         self.assertEqual(
-            tuple(result["per_parameter"]),
+            tuple(result["transformed"]["per_parameter"]),
             ("Mass", "Energy"),
         )
         self.assertAlmostEqual(
-            result["aggregate"]["R2"],
+            result["transformed"]["aggregate"]["R2"],
             (0.0 + 0.915) / 2.0,
             places=6,
         )
@@ -179,13 +180,14 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
             np.ones((2, 2)),
         )
         first_evaluation = {
-            "aggregate": {
+            "transformed": {
+                "aggregate": {
                 "RMSE": 1.0,
                 "RRMSE": 0.1,
                 "MAE": 0.8,
                 "R2": 0.8,
-            },
-            "per_parameter": {
+                },
+                "per_parameter": {
                 "Mass": {
                     "RMSE": 1.0,
                     "RRMSE": 0.1,
@@ -198,16 +200,22 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
                     "MAE": 1.5,
                     "R2": 0.2,
                 },
+                },
             },
+            "physical": {"per_parameter": {}},
         }
+        first_evaluation["physical"]["per_parameter"] = first_evaluation[
+            "transformed"
+        ]["per_parameter"]
         second_evaluation = {
-            "aggregate": {
+            "transformed": {
+                "aggregate": {
                 "RMSE": 0.9,
                 "RRMSE": 0.09,
                 "MAE": 0.7,
                 "R2": 0.7,
-            },
-            "per_parameter": {
+                },
+                "per_parameter": {
                 "Mass": {
                     "RMSE": 0.5,
                     "RRMSE": 0.05,
@@ -220,8 +228,13 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
                     "MAE": 0.5,
                     "R2": 0.99,
                 },
+                },
             },
+            "physical": {"per_parameter": {}},
         }
+        second_evaluation["physical"]["per_parameter"] = second_evaluation[
+            "transformed"
+        ]["per_parameter"]
 
         experiment = mock.Mock()
         experiment.directory = Path("/tmp/experiment")
@@ -330,7 +343,10 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            train_characterizer._print_parameter_metrics(per_parameter)
+            train_characterizer._print_parameter_metrics(
+                per_parameter,
+                "transformed",
+            )
 
         report = output.getvalue()
         self.assertLess(report.index("Mass:"), report.index("Energy:"))
