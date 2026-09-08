@@ -1,7 +1,7 @@
 """Generate reproducible diagnostics for compatible ASTRAI experiments.
 
 The command validates the characterizer and generator configurations,
-their held-out fold, their shared physical-parameter scaling, and the
+their test fold, their shared physical-parameter scaling, and the
 preprocessed test artefacts. It applies one seeded LSST augmentation to
 the complete test batch and produces:
 
@@ -30,6 +30,7 @@ from astrai.utils.target_transformations import (
     validate_preprocessing_target_contract,
     validate_target_contract_compatibility,
 )
+from astrai.utils.training import resolve_test_fold
 
 
 _SAMPLE_DIAGNOSTIC_HEADER = (
@@ -190,23 +191,22 @@ def resolve_diagnostic_fold(
 ):
     """Validate the fold used by all diagnostic inputs.
 
-    characterizer_fold supplies the missing metadata for legacy PPReg
-    experiments that did not record held_out_fold in their configuration.
+    characterizer_fold supplies missing metadata for legacy PPReg experiments
+    that did not record a test-fold field in their configuration.
     """
-    configured_char_fold = _config_value(
-        char_cfg,
-        ("characterizer", "training", "held_out_fold"),
+    configured_char_fold = resolve_test_fold(
+        _config_value(char_cfg, ("characterizer", "training")) or {}
     )
-    configured_gen_fold = _config_value(
-        gen_cfg,
-        ("generator", "training", "held_out_fold"),
+    configured_gen_fold = resolve_test_fold(
+        _config_value(gen_cfg, ("generator", "training")) or {}
     )
 
     if configured_char_fold is None:
         if characterizer_fold is None:
             raise ValueError(
                 "The characterizer experiment does not record "
-                "held_out_fold; pass --characterizer-fold explicitly."
+                "test_fold; pass --characterizer-fold explicitly for a "
+                "legacy experiment."
             )
         resolved_char_fold = characterizer_fold
     else:
@@ -223,7 +223,7 @@ def resolve_diagnostic_fold(
 
     if configured_gen_fold is None:
         raise ValueError(
-            "The generator experiment does not record held_out_fold."
+            "The generator experiment does not record test_fold."
         )
 
     n_splits = _config_value(
@@ -701,8 +701,8 @@ def main(argv=None):
         "--characterizer-fold",
         type=int,
         help=(
-            "Held-out fold of a legacy characterizer experiment whose "
-            "configuration does not record held_out_fold"
+            "Test fold of a legacy characterizer experiment whose "
+            "configuration does not record test_fold"
         ),
     )
     parser.add_argument(

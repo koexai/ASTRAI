@@ -20,6 +20,7 @@ import torch
 from astrai.models.factories import build_characterizer
 from astrai.utils.metrics import (
     METRIC_NAMES,
+    compute_selection_metric,
     compute_target_metrics,
 )
 from astrai.utils.parameter_validation import validate_parameter_names
@@ -36,11 +37,18 @@ from astrai.utils.reproducibility import (
 from astrai.utils.training import (
     build_training_components,
     build_training_loader,
-    combine_clean_and_augmented,
+    build_validation_selection_tracker,
+    assert_selected_validation_score,
     create_metric_history,
+    is_strictly_better_score,
     load_fold_arrays,
+    load_outer_fold_indices,
+    load_preprocessing_source_array,
+    partition_precomputed_development_data,
     print_metric_history,
     record_metric_values,
+    resolve_test_fold,
+    resolve_training_control,
     select_training_device,
     train_supervised_model,
 )
@@ -85,30 +93,43 @@ def _load_fold_data(fold_dir):
     return (*common, y_test_transformed)
 
 
-def _evaluate_characterizer(
-    model, x_test_pca, y_test_transformed, param_names, prep_dir, device, cfg
-):
-    """Evaluate the characterizer and return aggregate and named metrics.
-
-    Loads the y_scaler from prep_dir to inverse transform predictions.
-    model: the trained characterizer model
-    x_test_pca: (n_test, n_pca) PCA-transformed test curves
-    y_test_transformed: canonical transformed test parameters
-    param_names: ordered names of the predicted parameters
-    prep_dir: directory containing preprocessing artifacts (expects y_scaler.pkl)
-    device: torch.device to run on
-    Returns aggregate and per-parameter RMSE, RRMSE, MAE and R2 values.
-    """
-    y_scaler = joblib.load(os.path.join(prep_dir, "y_scaler.pkl"))
-
+def _predict_characterizer_transformed(model, inputs_pca, y_scaler, device):
+    """Return characterizer predictions in canonical transformed space."""
     model.eval()
     with torch.no_grad():
-        x_test_t = torch.FloatTensor(x_test_pca).to(device)
-        pred_sc = model(x_test_t).cpu().numpy()
-        pred_transformed = scaled_to_transformed(pred_sc, y_scaler)
+        inputs_tensor = torch.FloatTensor(inputs_pca).to(device)
+        predictions_scaled = model(inputs_tensor).cpu().numpy()
+    return scaled_to_transformed(predictions_scaled, y_scaler)
+
+
+def _evaluate_characterizer(
+    model,
+    inputs_pca,
+    targets_transformed,
+    param_names,
+    prep_dir,
+    device,
+    cfg,
+    y_scaler=None,
+):
+    """Evaluate complete characterisation metrics on an explicit dataset.
+
+    ``inputs_pca`` and ``targets_transformed`` may represent validation or
+    test data. Aggregate metrics stay in transformed space, while physical
+    metrics remain per parameter. The scaler is loaded from ``prep_dir`` only
+    when a caller has not supplied the already loaded instance.
+    """
+    if y_scaler is None:
+        y_scaler = joblib.load(os.path.join(prep_dir, "y_scaler.pkl"))
+    pred_transformed = _predict_characterizer_transformed(
+        model,
+        inputs_pca,
+        y_scaler,
+        device,
+    )
 
     return compute_target_metrics(
-        y_test_transformed,
+        targets_transformed,
         pred_transformed,
         param_names,
         cfg,
@@ -143,9 +164,9 @@ def _print_parameter_metrics(per_parameter, space):
         print(f"      {name}: {values}")
 
 
-def _print_parameter_final_stats(history, held_out_fold):
+def _print_parameter_final_stats(history, test_fold):
     """Print per-parameter values for one fold or statistics across folds."""
-    if held_out_fold is None:
+    if test_fold is None:
         n_folds = len(next(iter(history.values()))[METRIC_NAMES[0]])
         print(f"\n--- PER-PARAMETER CHARACTERIZATION ({n_folds}-Fold Mean) ---")
         for name, metric_history in history.items():
@@ -160,7 +181,7 @@ def _print_parameter_final_stats(history, held_out_fold):
 
     print(
         f"\n--- PER-PARAMETER CHARACTERIZATION "
-        f"(Held-out fold {held_out_fold}) ---"
+        f"(Test fold {test_fold}) ---"
     )
     for name, metric_history in history.items():
         values = " | ".join(
@@ -192,7 +213,7 @@ def run_characterizer_training(
     cfg : dict
         Parsed YAML configuration.
     prep_dir : str
-        Directory with preprocess.py output.
+        Directory with preprocessing output.
     exp_dir : str or None
         Experiment directory. Created automatically if None.
     config_path : str or None
@@ -215,9 +236,18 @@ def run_characterizer_training(
     n_splits = cfg["preprocessing"]["n_splits"]
     base_seed = cfg["preprocessing"]["random_seed"]
     char_cfg = cfg["characterizer"]
+    training_cfg = char_cfg["training"]
+    training_control = resolve_training_control(
+        training_cfg,
+        "transformed.aggregate.R2",
+    )
+    training_control["selection_policy"]["metric_path"] = (
+        "transformed.aggregate."
+        + training_control["selection_policy"]["metric"]
+    )
 
-    held_out_fold = char_cfg["training"].get("held_out_fold")
-    fold_indices = resolve_fold_indices(held_out_fold, n_splits)
+    test_fold = resolve_test_fold(training_cfg)
+    fold_indices = resolve_fold_indices(test_fold, n_splits)
     prep_dir = resolve_user_path(prep_dir)
 
     device = select_training_device()
@@ -233,7 +263,7 @@ def run_characterizer_training(
         folds=fold_indices,
         base_seed=base_seed,
         device=device,
-        checkpoint_metric="transformed.aggregate.R2",
+        checkpoint_selection_policy=training_control["selection_policy"],
     )
     exp_dir = str(experiment.directory)
     print(f"Characterizer experiment directory: {exp_dir}")
@@ -241,18 +271,38 @@ def run_characterizer_training(
     history = create_metric_history()
     transformed_parameter_history = _initialise_parameter_history(param_names)
     physical_parameter_history = _initialise_parameter_history(param_names)
-    best_r2 = -np.inf
+    globally_selected_validation_score = None
+    y_transformed = None
+    y_scaler = None
 
     try:
         print(
             "Starting Characterizer Training (SplitMLP) with PCA "
             f"({n_pca} components)..."
         )
+        print(
+            "Checkpoint selection: validation "
+            f"{training_control['selection_policy']['metric']} "
+            "in transformed aggregate target space "
+            f"({training_control['selection_policy']['mode']}); test data "
+            "is reserved for final estimation."
+        )
+        print(
+            "Early stopping: "
+            + (
+                "enabled "
+                f"(patience={training_control['early_stopping']['patience']}, "
+                f"min_delta={training_control['early_stopping']['min_delta']})"
+                if training_control["early_stopping"]["enabled"]
+                else "disabled; all maximum epochs will run"
+            )
+            + "."
+        )
 
-        if held_out_fold is None:
+        if test_fold is None:
             print(f"Training all {n_splits} folds.")
         else:
-            print(f"Training split with held-out fold {held_out_fold}.")
+            print(f"Training split with test fold {test_fold}.")
 
         for fold_idx in fold_indices:
             start_time = time.time()
@@ -265,16 +315,17 @@ def run_characterizer_training(
                 y_train_scaled,
                 y_test_transformed,
             ) = _load_fold_data(fold_dir)
+            if y_transformed is None:
+                y_transformed = load_preprocessing_source_array(
+                    prep_dir,
+                    "y_transformed.npy",
+                )
+                y_scaler = joblib.load(prep_dir / "y_scaler.pkl")
+            development_global_indices, test_global_indices = (
+                load_outer_fold_indices(fold_dir)
+            )
             print(
                 f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
-            )
-
-            x_train_combined, y_train_combined = (
-                combine_clean_and_augmented(
-                    x_train_clean_pca,
-                    x_train_aug_pca,
-                    y_train_scaled,
-                )
             )
 
             seed_plan = build_training_seed_plan(
@@ -282,6 +333,27 @@ def run_characterizer_training(
                 "characterizer",
                 fold_idx,
             )
+            partition = partition_precomputed_development_data(
+                x_train_clean_pca,
+                x_train_aug_pca,
+                y_train_scaled,
+                training_control["validation_fraction"],
+                seed_plan["validation_split"],
+                minimum_validation_samples=(
+                    2
+                    if training_control["selection_policy"]["metric"] == "R2"
+                    else 1
+                ),
+            )
+            training_global_indices = development_global_indices[
+                partition["training_local_indices"]
+            ]
+            validation_global_indices = development_global_indices[
+                partition["validation_local_indices"]
+            ]
+            validation_targets_transformed = y_transformed[
+                validation_global_indices
+            ]
             configure_torch_determinism(seed_plan["model"])
             experiment.record_execution_environment(device=device)
             print(
@@ -291,9 +363,9 @@ def run_characterizer_training(
             )
 
             train_loader = build_training_loader(
-                x_train_combined,
-                y_train_combined,
-                batch_size=char_cfg["training"]["batch_size"],
+                partition["training_inputs"],
+                partition["training_targets"],
+                batch_size=training_cfg["batch_size"],
                 seed=seed_plan["data_loader"],
             )
 
@@ -301,20 +373,56 @@ def run_characterizer_training(
 
             optimizer, criterion, scheduler = build_training_components(
                 model,
-                char_cfg["training"],
+                training_cfg,
             )
 
-            train_supervised_model(
+            selection_tracker = build_validation_selection_tracker(
+                training_control
+            )
+
+            def validation_score_fn(current_model):
+                predictions = _predict_characterizer_transformed(
+                    current_model,
+                    partition["validation_inputs"],
+                    y_scaler,
+                    device,
+                )
+                return compute_selection_metric(
+                    validation_targets_transformed,
+                    predictions,
+                    training_control["selection_policy"]["metric"],
+                    n_columns=n_params,
+                )
+
+            training_result = train_supervised_model(
                 model,
                 train_loader,
                 optimizer,
                 criterion,
                 scheduler,
-                char_cfg["training"]["epochs"],
+                training_cfg["epochs"],
                 device,
+                validation_score_fn=validation_score_fn,
+                selection_tracker=selection_tracker,
             )
 
-            evaluation = _evaluate_characterizer(
+            validation_evaluation = _evaluate_characterizer(
+                model,
+                partition["validation_inputs"],
+                validation_targets_transformed,
+                param_names,
+                prep_dir,
+                device,
+                cfg,
+                y_scaler=y_scaler,
+            )
+            selected_validation_score = assert_selected_validation_score(
+                training_result["selected_validation_score"],
+                validation_evaluation,
+                training_control["selection_policy"]["metric_path"],
+            )
+
+            test_evaluation = _evaluate_characterizer(
                 model,
                 x_test_pca,
                 y_test_transformed,
@@ -322,41 +430,79 @@ def run_characterizer_training(
                 prep_dir,
                 device,
                 cfg,
+                y_scaler=y_scaler,
             )
-            metrics = evaluation["transformed"]["aggregate"]
+            test_metrics = test_evaluation["transformed"]["aggregate"]
 
-            record_metric_values(history, metrics)
+            record_metric_values(history, test_metrics)
             _record_parameter_metrics(
                 transformed_parameter_history,
-                evaluation["transformed"]["per_parameter"],
+                test_evaluation["transformed"]["per_parameter"],
             )
             _record_parameter_metrics(
                 physical_parameter_history,
-                evaluation["physical"]["per_parameter"],
+                test_evaluation["physical"]["per_parameter"],
             )
             _print_parameter_metrics(
-                evaluation["transformed"]["per_parameter"],
+                test_evaluation["transformed"]["per_parameter"],
                 "transformed",
             )
             _print_parameter_metrics(
-                evaluation["physical"]["per_parameter"],
+                test_evaluation["physical"]["per_parameter"],
                 "physical",
             )
 
             elapsed = time.time() - start_time
             print(
                 f"Fold {fold_idx} | {elapsed:.0f}s | "
-                f"R2: {metrics['R2']:.4f}"
+                f"selected validation "
+                f"{training_control['selection_policy']['metric']}: "
+                f"{selected_validation_score:.4f} | test R2: "
+                f"{test_metrics['R2']:.4f}"
+            )
+            index_files = experiment.save_fold_indices(
+                fold_idx,
+                training_global_indices,
+                validation_global_indices,
+                test_global_indices,
+            )
+            trace_path = experiment.save_training_trace(
+                fold_idx,
+                training_result["trace"],
             )
             experiment.record_fold(
                 fold_idx,
-                evaluation,
+                {
+                    "validation": validation_evaluation,
+                    "test": test_evaluation,
+                },
                 seed_plan,
                 elapsed,
+                selection={
+                    "fold_selected_epoch": training_result["selected_epoch"],
+                    "fold_selected_validation_score": (
+                        selected_validation_score
+                    ),
+                },
+                training={
+                    "maximum_epochs": training_cfg["epochs"],
+                    "validation_fraction": training_control[
+                        "validation_fraction"
+                    ],
+                    "epochs_completed": training_result["epochs_completed"],
+                    "stopped_early": training_result["stopped_early"],
+                    "early_stopping": training_control["early_stopping"],
+                },
+                index_files=index_files,
+                training_trace=trace_path,
             )
 
-            if metrics["R2"] > best_r2:
-                best_r2 = metrics["R2"]
+            if is_strictly_better_score(
+                selected_validation_score,
+                globally_selected_validation_score,
+                training_control["selection_policy"]["mode"],
+            ):
+                globally_selected_validation_score = selected_validation_score
                 checkpoint_paths = save_split_checkpoint(
                     exp_dir,
                     char_cfg["checkpoint"],
@@ -365,28 +511,29 @@ def run_characterizer_training(
                 )
                 experiment.record_checkpoint(
                     fold_idx,
-                    best_r2,
+                    selected_validation_score,
                     checkpoint_paths,
+                    selected_epoch=training_result["selected_epoch"],
                 )
 
         print("\n" + "=" * 50)
-        print("CHARACTERIZER - FINAL PERFORMANCE REPORT")
+        print("CHARACTERIZER - FINAL TEST PERFORMANCE REPORT")
         print(f"PCA Components: {n_pca}")
         print("=" * 50)
         print_metric_history(
-            "CHARACTERIZATION",
+            "TEST CHARACTERIZATION",
             history,
-            held_out_fold=held_out_fold,
+            test_fold=test_fold,
         )
-        print("\nTransformed target space:")
+        print("\nTest metrics in transformed target space:")
         _print_parameter_final_stats(
             transformed_parameter_history,
-            held_out_fold,
+            test_fold,
         )
-        print("\nPhysical target space:")
+        print("\nTest metrics in physical target space:")
         _print_parameter_final_stats(
             physical_parameter_history,
-            held_out_fold,
+            test_fold,
         )
         print("=" * 50)
 

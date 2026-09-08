@@ -21,6 +21,7 @@ _AUGMENTATION_NAMESPACE = 2
 _MODEL_NAMESPACE = 3
 _DATA_LOADER_NAMESPACE = 4
 _DIAGNOSTIC_NAMESPACE = 5
+_VALIDATION_SPLIT_NAMESPACE = 6
 
 _TRAINING_STAGE_NAMESPACES = {
     "characterizer": 10,
@@ -113,6 +114,12 @@ def build_training_seed_plan(base_seed, stage, fold_idx):
             stage_namespace,
             fold_idx,
             _DATA_LOADER_NAMESPACE,
+        ),
+        "validation_split": derive_seed(
+            base_seed,
+            stage_namespace,
+            fold_idx,
+            _VALIDATION_SPLIT_NAMESPACE,
         ),
     }
 

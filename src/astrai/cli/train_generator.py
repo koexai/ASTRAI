@@ -14,11 +14,16 @@ import os
 import time
 
 import joblib
-import numpy as np
 import torch
 
 from astrai.models.factories import build_generator
-from astrai.utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
+from astrai.utils.metrics import (
+    compute_selection_metric,
+    get_rmse,
+    get_mae,
+    get_r_squared,
+    get_rrmse,
+)
 from astrai.utils.checkpoints import (
     save_split_checkpoint,
 )
@@ -32,11 +37,18 @@ from astrai.utils.reproducibility import (
 from astrai.utils.training import (
     build_training_components,
     build_training_loader,
-    combine_clean_and_augmented,
+    build_validation_selection_tracker,
+    assert_selected_validation_score,
     create_metric_history,
+    is_strictly_better_score,
     load_fold_arrays,
+    load_outer_fold_indices,
+    load_preprocessing_source_array,
+    partition_precomputed_development_data,
     print_metric_history,
     record_metric_values,
+    resolve_test_fold,
+    resolve_training_control,
     select_training_device,
     train_supervised_model,
 )
@@ -70,32 +82,53 @@ def _load_fold_data(fold_dir):
     )
 
 
-def _evaluate_generator(model, y_test_scaled, x_test_clean, prep_dir, device):
-    """Evaluate generator on the test fold, return metrics dict.
-    Loads the x_scaler and pca from prep_dir to inverse transform predictions.
-    model: the trained generator model
-    y_test_scaled: (n_test, n_params) scaled test parameters
-    x_test_clean: (n_test, n_timepoints) true test curves
-    prep_dir: directory containing preprocessing artifacts
-    device: torch.device to run on
-    Returns a dict of metrics (RMSE, RRMSE, MAE, R2)
-    comparing the reconstructed curves to x_test_clean."""
-    x_scaler = joblib.load(os.path.join(prep_dir, "x_scaler.pkl"))
-    pca = joblib.load(os.path.join(prep_dir, "pca.pkl"))
-
+def _predict_generator_curves(
+    model,
+    parameters_scaled,
+    x_scaler,
+    pca,
+    device,
+):
+    """Return generated light curves in their original data space."""
     model.eval()
     with torch.no_grad():
-        y_test_t = torch.FloatTensor(y_test_scaled).to(device)
-        pred_curves_pca = model(y_test_t).cpu().numpy()
-        pred_curves = x_scaler.inverse_transform(
-            pca.inverse_transform(pred_curves_pca)
-        )
+        parameters_tensor = torch.FloatTensor(parameters_scaled).to(device)
+        predictions_pca = model(parameters_tensor).cpu().numpy()
+    return x_scaler.inverse_transform(pca.inverse_transform(predictions_pca))
+
+
+def _evaluate_generator(
+    model,
+    parameters_scaled,
+    target_curves,
+    prep_dir,
+    device,
+    x_scaler=None,
+    pca=None,
+):
+    """Evaluate complete generation metrics on an explicit dataset.
+
+    ``parameters_scaled`` and ``target_curves`` may represent validation or
+    test data. Scaler and PCA instances are loaded from ``prep_dir`` only when
+    the caller has not supplied the already loaded instances.
+    """
+    if x_scaler is None:
+        x_scaler = joblib.load(os.path.join(prep_dir, "x_scaler.pkl"))
+    if pca is None:
+        pca = joblib.load(os.path.join(prep_dir, "pca.pkl"))
+    pred_curves = _predict_generator_curves(
+        model,
+        parameters_scaled,
+        x_scaler,
+        pca,
+        device,
+    )
 
     return {
-        "RMSE": get_rmse(x_test_clean.ravel(), pred_curves.ravel()),
-        "RRMSE": get_rrmse(x_test_clean.ravel(), pred_curves.ravel()),
-        "MAE": get_mae(x_test_clean.ravel(), pred_curves.ravel()),
-        "R2": get_r_squared(x_test_clean.ravel(), pred_curves.ravel()),
+        "RMSE": get_rmse(target_curves.ravel(), pred_curves.ravel()),
+        "RRMSE": get_rrmse(target_curves.ravel(), pred_curves.ravel()),
+        "MAE": get_mae(target_curves.ravel(), pred_curves.ravel()),
+        "R2": get_r_squared(target_curves.ravel(), pred_curves.ravel()),
     }
 
 
@@ -113,7 +146,7 @@ def run_generator_training(
     cfg : dict
         Parsed YAML configuration.
     prep_dir : str
-        Directory with preprocess.py output.
+        Directory with preprocessing output.
     exp_dir : str or None
         Experiment directory. Created automatically if None.
     config_path : str or None
@@ -126,14 +159,18 @@ def run_generator_training(
     str
         The experiment directory used.
     """
-    n_params = cfg["data"]["n_params"]
     n_pca = cfg["preprocessing"]["pca_components"]
     n_splits = cfg["preprocessing"]["n_splits"]
     base_seed = cfg["preprocessing"]["random_seed"]
     gen_cfg = cfg["generator"]
+    training_cfg = gen_cfg["training"]
+    training_control = resolve_training_control(training_cfg, "R2")
+    training_control["selection_policy"]["metric_path"] = training_control[
+        "selection_policy"
+    ]["metric"]
 
-    held_out_fold = gen_cfg["training"].get("held_out_fold")
-    fold_indices = resolve_fold_indices(held_out_fold, n_splits)
+    test_fold = resolve_test_fold(training_cfg)
+    fold_indices = resolve_fold_indices(test_fold, n_splits)
     prep_dir = resolve_user_path(prep_dir)
 
     device = select_training_device()
@@ -149,23 +186,45 @@ def run_generator_training(
         folds=fold_indices,
         base_seed=base_seed,
         device=device,
+        checkpoint_selection_policy=training_control["selection_policy"],
     )
     exp_dir = str(experiment.directory)
     print(f"Generator experiment directory: {exp_dir}")
 
     history = create_metric_history()
-    best_r2 = -np.inf
+    globally_selected_validation_score = None
+    x_raw = None
+    x_scaler = None
+    pca = None
 
     try:
         print(
             "Starting Generator Training (MLPWithResiduals) with PCA "
             f"({n_pca} components)..."
         )
+        print(
+            "Checkpoint selection: validation "
+            f"{training_control['selection_policy']['metric']} in flattened "
+            "light-curve space "
+            f"({training_control['selection_policy']['mode']}); test data "
+            "is reserved for final estimation."
+        )
+        print(
+            "Early stopping: "
+            + (
+                "enabled "
+                f"(patience={training_control['early_stopping']['patience']}, "
+                f"min_delta={training_control['early_stopping']['min_delta']})"
+                if training_control["early_stopping"]["enabled"]
+                else "disabled; all maximum epochs will run"
+            )
+            + "."
+        )
 
-        if held_out_fold is None:
+        if test_fold is None:
             print(f"Training all {n_splits} folds.")
         else:
-            print(f"Training split with held-out fold {held_out_fold}.")
+            print(f"Training split with test fold {test_fold}.")
 
         for fold_idx in fold_indices:
             start_time = time.time()
@@ -178,16 +237,18 @@ def run_generator_training(
                 y_test_scaled,
                 x_test_clean,
             ) = _load_fold_data(fold_dir)
+            if x_raw is None:
+                x_raw = load_preprocessing_source_array(
+                    prep_dir,
+                    "x_raw.npy",
+                )
+                x_scaler = joblib.load(prep_dir / "x_scaler.pkl")
+                pca = joblib.load(prep_dir / "pca.pkl")
+            development_global_indices, test_global_indices = (
+                load_outer_fold_indices(fold_dir)
+            )
             print(
                 f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
-            )
-
-            pca_train_combined, y_train_combined = (
-                combine_clean_and_augmented(
-                    x_train_clean_pca,
-                    x_train_aug_pca,
-                    y_train_scaled,
-                )
             )
 
             seed_plan = build_training_seed_plan(
@@ -195,6 +256,25 @@ def run_generator_training(
                 "generator",
                 fold_idx,
             )
+            partition = partition_precomputed_development_data(
+                x_train_clean_pca,
+                x_train_aug_pca,
+                y_train_scaled,
+                training_control["validation_fraction"],
+                seed_plan["validation_split"],
+                minimum_validation_samples=(
+                    2
+                    if training_control["selection_policy"]["metric"] == "R2"
+                    else 1
+                ),
+            )
+            training_global_indices = development_global_indices[
+                partition["training_local_indices"]
+            ]
+            validation_global_indices = development_global_indices[
+                partition["validation_local_indices"]
+            ]
+            validation_target_curves = x_raw[validation_global_indices]
             configure_torch_determinism(seed_plan["model"])
             experiment.record_execution_environment(device=device)
             print(
@@ -204,9 +284,9 @@ def run_generator_training(
             )
 
             train_loader = build_training_loader(
-                y_train_combined,
-                pca_train_combined,
-                batch_size=gen_cfg["training"]["batch_size"],
+                partition["training_targets"],
+                partition["training_inputs"],
+                batch_size=training_cfg["batch_size"],
                 seed=seed_plan["data_loader"],
             )
 
@@ -214,39 +294,116 @@ def run_generator_training(
 
             optimizer, criterion, scheduler = build_training_components(
                 model,
-                gen_cfg["training"],
+                training_cfg,
             )
 
-            train_supervised_model(
+            selection_tracker = build_validation_selection_tracker(
+                training_control
+            )
+
+            def validation_score_fn(current_model):
+                predictions = _predict_generator_curves(
+                    current_model,
+                    partition["validation_targets"],
+                    x_scaler,
+                    pca,
+                    device,
+                )
+                return compute_selection_metric(
+                    validation_target_curves,
+                    predictions,
+                    training_control["selection_policy"]["metric"],
+                )
+
+            training_result = train_supervised_model(
                 model,
                 train_loader,
                 optimizer,
                 criterion,
                 scheduler,
-                gen_cfg["training"]["epochs"],
+                training_cfg["epochs"],
                 device,
+                validation_score_fn=validation_score_fn,
+                selection_tracker=selection_tracker,
             )
 
-            metrics = _evaluate_generator(
-                model, y_test_scaled, x_test_clean, prep_dir, device
+            validation_metrics = _evaluate_generator(
+                model,
+                partition["validation_targets"],
+                validation_target_curves,
+                prep_dir,
+                device,
+                x_scaler=x_scaler,
+                pca=pca,
+            )
+            selected_validation_score = assert_selected_validation_score(
+                training_result["selected_validation_score"],
+                validation_metrics,
+                training_control["selection_policy"]["metric_path"],
+            )
+            test_metrics = _evaluate_generator(
+                model,
+                y_test_scaled,
+                x_test_clean,
+                prep_dir,
+                device,
+                x_scaler=x_scaler,
+                pca=pca,
             )
 
-            record_metric_values(history, metrics)
+            record_metric_values(history, test_metrics)
 
             elapsed = time.time() - start_time
             print(
                 f"Fold {fold_idx} | {elapsed:.0f}s | "
-                f"R2: {metrics['R2']:.4f}"
+                f"selected validation "
+                f"{training_control['selection_policy']['metric']}: "
+                f"{selected_validation_score:.4f} | test R2: "
+                f"{test_metrics['R2']:.4f}"
+            )
+            index_files = experiment.save_fold_indices(
+                fold_idx,
+                training_global_indices,
+                validation_global_indices,
+                test_global_indices,
+            )
+            trace_path = experiment.save_training_trace(
+                fold_idx,
+                training_result["trace"],
             )
             experiment.record_fold(
                 fold_idx,
-                metrics,
+                {
+                    "validation": validation_metrics,
+                    "test": test_metrics,
+                },
                 seed_plan,
                 elapsed,
+                selection={
+                    "fold_selected_epoch": training_result["selected_epoch"],
+                    "fold_selected_validation_score": (
+                        selected_validation_score
+                    ),
+                },
+                training={
+                    "maximum_epochs": training_cfg["epochs"],
+                    "validation_fraction": training_control[
+                        "validation_fraction"
+                    ],
+                    "epochs_completed": training_result["epochs_completed"],
+                    "stopped_early": training_result["stopped_early"],
+                    "early_stopping": training_control["early_stopping"],
+                },
+                index_files=index_files,
+                training_trace=trace_path,
             )
 
-            if metrics["R2"] > best_r2:
-                best_r2 = metrics["R2"]
+            if is_strictly_better_score(
+                selected_validation_score,
+                globally_selected_validation_score,
+                training_control["selection_policy"]["mode"],
+            ):
+                globally_selected_validation_score = selected_validation_score
                 checkpoint_paths = save_split_checkpoint(
                     exp_dir,
                     gen_cfg["checkpoint"],
@@ -255,18 +412,19 @@ def run_generator_training(
                 )
                 experiment.record_checkpoint(
                     fold_idx,
-                    best_r2,
+                    selected_validation_score,
                     checkpoint_paths,
+                    selected_epoch=training_result["selected_epoch"],
                 )
 
         print("\n" + "=" * 50)
-        print("GENERATOR - FINAL PERFORMANCE REPORT")
+        print("GENERATOR - FINAL TEST PERFORMANCE REPORT")
         print(f"PCA Components: {n_pca}")
         print("=" * 50)
         print_metric_history(
-            "GENERATION",
+            "TEST GENERATION",
             history,
-            held_out_fold=held_out_fold,
+            test_fold=test_fold,
         )
         print("=" * 50)
 

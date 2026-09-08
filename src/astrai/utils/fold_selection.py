@@ -1,22 +1,22 @@
 """Utilities for selecting cross-validation splits."""
 
 
-def resolve_fold_indices(held_out_fold, n_splits):
+def resolve_fold_indices(test_fold, n_splits):
     """Return the cross-validation split indices to execute.
 
-    If ``held_out_fold`` is None, all splits are selected. Otherwise, only
-    the split corresponding to the requested held-out fold is selected.
+    If ``test_fold`` is None, all outer splits are selected. Otherwise, only
+    the split corresponding to the requested final test fold is selected.
     """
-    if held_out_fold is None:
+    if test_fold is None:
         return tuple(range(1, n_splits + 1))
 
-    if isinstance(held_out_fold, bool) or not isinstance(held_out_fold, int):
-        raise TypeError("held_out_fold must be an integer or null")
+    if isinstance(test_fold, bool) or not isinstance(test_fold, int):
+        raise TypeError("test_fold must be an integer or null")
 
-    if not 1 <= held_out_fold <= n_splits:
+    if not 1 <= test_fold <= n_splits:
         raise ValueError(
-            f"held_out_fold must be between 1 and {n_splits}, "
-            f"found {held_out_fold}"
+            f"test_fold must be between 1 and {n_splits}, "
+            f"found {test_fold}"
         )
 
-    return (held_out_fold,)
+    return (test_fold,)

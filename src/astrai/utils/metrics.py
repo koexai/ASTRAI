@@ -11,6 +11,12 @@ from astrai.utils.target_transformations import transformed_to_physical
 
 
 METRIC_NAMES = ("RMSE", "RRMSE", "MAE", "R2")
+METRIC_MODES = {
+    "RMSE": "min",
+    "RRMSE": "min",
+    "MAE": "min",
+    "R2": "max",
+}
 
 
 def get_mse(y, y_pred):
@@ -46,6 +52,66 @@ def get_rrmse(y, y_pred):
     rmse = get_rmse(y, y_pred)
     mean_y = np.mean(np.abs(y))
     return rmse / mean_y if mean_y != 0 else rmse
+
+
+def get_metric_function(metric_name):
+    """Return the implementation and optimisation direction of a metric."""
+    metric_functions = {
+        "RMSE": get_rmse,
+        "RRMSE": get_rrmse,
+        "MAE": get_mae,
+        "R2": get_r_squared,
+    }
+    try:
+        return metric_functions[metric_name], METRIC_MODES[metric_name]
+    except KeyError as exc:
+        choices = ", ".join(METRIC_NAMES)
+        raise ValueError(
+            f"Unknown checkpoint-selection metric {metric_name!r}; "
+            f"expected one of: {choices}."
+        ) from exc
+
+
+def compute_selection_metric(true, pred, metric_name, n_columns=None):
+    """Compute the scalar validation metric used for checkpoint selection.
+
+    ``n_columns`` preserves the historical characterisation convention by
+    computing the metric per transformed parameter and taking the unweighted
+    mean. When omitted, both arrays are flattened for light-curve selection.
+    """
+    true = np.asarray(true)
+    pred = np.asarray(pred)
+    if true.shape != pred.shape:
+        raise ValueError(
+            "Validation targets and predictions must have the same shape: "
+            f"{true.shape} != {pred.shape}."
+        )
+    if true.size == 0:
+        raise ValueError("Checkpoint selection requires validation samples.")
+
+    metric_function, _ = get_metric_function(metric_name)
+    if n_columns is None:
+        score = metric_function(true.ravel(), pred.ravel())
+    else:
+        if true.ndim != 2 or true.shape[1] != n_columns:
+            raise ValueError(
+                "Characterisation validation arrays must have shape "
+                f"(n_samples, {n_columns})."
+            )
+        score = np.mean(
+            [
+                metric_function(true[:, column], pred[:, column])
+                for column in range(n_columns)
+            ]
+        )
+
+    score = float(score)
+    if not np.isfinite(score):
+        raise ValueError(
+            f"Validation {metric_name} is not finite; checkpoint selection "
+            "requires a finite score."
+        )
+    return score
 
 
 def compute_parameter_metrics(true, pred, param_names):
@@ -87,10 +153,8 @@ def compute_parameter_metrics(true, pred, param_names):
 
     names = validate_parameter_names(true.shape[1], param_names)
     metric_functions = {
-        "RMSE": get_rmse,
-        "RRMSE": get_rrmse,
-        "MAE": get_mae,
-        "R2": get_r_squared,
+        metric_name: get_metric_function(metric_name)[0]
+        for metric_name in METRIC_NAMES
     }
     per_parameter = {}
 

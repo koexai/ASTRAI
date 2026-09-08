@@ -7,6 +7,7 @@ completed ones.
 """
 
 import hashlib
+import csv
 import os
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ import numpy as np
 import yaml
 
 from astrai.utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
+from astrai.utils.metrics import get_metric_function
 from astrai.utils.runtime_environment import (
     capture_execution_environment,
     capture_runtime_environment,
@@ -30,7 +32,7 @@ from astrai.utils.target_transformations import (
 from astrai.paths import source_checkout_root, source_snapshot_root
 
 
-EXPERIMENT_METADATA_VERSION = 3
+EXPERIMENT_METADATA_VERSION = 4
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -260,7 +262,7 @@ class ExperimentRun:
         base_seed=None,
         device=None,
         checkpoint_metric="R2",
-        checkpoint_scope="held-out fold",
+        checkpoint_selection_policy=None,
         repository_root=_REPOSITORY_ROOT,
     ):
         """Create a run, snapshot its inputs and record ``running`` status."""
@@ -285,6 +287,16 @@ class ExperimentRun:
         started_at = _utc_now()
         parameter_names = config.get("data", {}).get("param_names")
         environment = capture_runtime_environment(device=device)
+        if checkpoint_selection_policy is None:
+            metric_name = checkpoint_metric.rsplit(".", 1)[-1]
+            _, metric_mode = get_metric_function(metric_name)
+            checkpoint_selection_policy = {
+                "dataset": "validation",
+                "metric": metric_name,
+                "metric_path": checkpoint_metric,
+                "mode": metric_mode,
+            }
+
         metadata = {
             "experiment_metadata_version": EXPERIMENT_METADATA_VERSION,
             "run": {
@@ -346,6 +358,11 @@ class ExperimentRun:
                 "legacy_without_metadata": None,
             },
             "results": {
+                "dataset_roles": {
+                    "training": "parameter optimisation only",
+                    "validation": "epoch and outer-fold checkpoint selection",
+                    "test": "final performance estimation only",
+                },
                 "metric_spaces": {
                     "characterization": {
                         "aggregate": "transformed",
@@ -354,17 +371,14 @@ class ExperimentRun:
                     "generation": "light_curve",
                 },
                 "folds": [],
+                "summary_dataset": "test",
                 "summary": {},
             },
             "checkpoint": {
-                "selection": {
-                    "metric": checkpoint_metric,
-                    "mode": "max",
-                    "scope": checkpoint_scope,
-                },
-                "best_fold": None,
-                "best_score": None,
-                "files": {},
+                "selection_policy": _normalise_metadata(
+                    checkpoint_selection_policy
+                ),
+                "selected_checkpoint": None,
             },
             "artefacts": {},
         }
@@ -458,19 +472,72 @@ class ExperimentRun:
             )
         os.replace(temporary, destination)
 
-    def record_fold(self, fold, metrics, seed_plan, elapsed_seconds):
-        """Persist one completed fold and its effective random seeds."""
+    def save_fold_indices(
+        self,
+        fold,
+        training_indices,
+        validation_indices,
+        test_indices,
+    ):
+        """Persist explicit global train, validation and test row indices."""
+        fold_directory = self.directory / f"fold_{int(fold)}"
+        fold_directory.mkdir(exist_ok=True)
+        paths = {}
+        for dataset, indices in (
+            ("training", training_indices),
+            ("validation", validation_indices),
+            ("test", test_indices),
+        ):
+            path = fold_directory / f"{dataset}_indices.npy"
+            np.save(path, np.asarray(indices, dtype=INDEX_ARRAY_DTYPE))
+            paths[dataset] = path.relative_to(self.directory).as_posix()
+        return paths
+
+    def save_training_trace(self, fold, trace):
+        """Persist the compact per-epoch selection trace for one fold."""
+        fold_directory = self.directory / f"fold_{int(fold)}"
+        fold_directory.mkdir(exist_ok=True)
+        path = fold_directory / "training_trace.csv"
+        fieldnames = (
+            "epoch",
+            "training_loss",
+            "validation_selection_score",
+            "learning_rate",
+            "selected_checkpoint",
+        )
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(trace)
+        return path.relative_to(self.directory).as_posix()
+
+    def record_fold(
+        self,
+        fold,
+        metrics,
+        seed_plan,
+        elapsed_seconds,
+        *,
+        selection=None,
+        training=None,
+        index_files=None,
+        training_trace=None,
+    ):
+        """Persist one completed outer fold and its selection evidence."""
         fold_key = f"fold_{int(fold)}"
         self.metadata["reproducibility"]["fold_seed_plans"][fold_key] = (
             _normalise_metadata(seed_plan)
         )
-        self.metadata["results"]["folds"].append(
-            {
-                "fold": int(fold),
-                "elapsed_seconds": float(elapsed_seconds),
-                "metrics": _normalise_metadata(metrics),
-            }
-        )
+        fold_record = {
+            "outer_fold": int(fold),
+            "elapsed_seconds": float(elapsed_seconds),
+            "indices": _normalise_metadata(index_files),
+            "checkpoint_selection": _normalise_metadata(selection),
+            "training": _normalise_metadata(training),
+            "metrics": _normalise_metadata(metrics),
+            "training_trace": training_trace,
+        }
+        self.metadata["results"]["folds"].append(fold_record)
         self._write_metadata()
 
     def record_execution_environment(self, device=None):
@@ -484,8 +551,8 @@ class ExperimentRun:
         )
         self._write_metadata()
 
-    def record_checkpoint(self, fold, score, files):
-        """Record the current best checkpoint and its persisted files."""
+    def record_checkpoint(self, fold, score, files, selected_epoch=None):
+        """Record the globally selected validation checkpoint and files."""
         checkpoint_files = {}
         for role, path in files.items():
             artefact_path = Path(path).expanduser().resolve()
@@ -494,13 +561,12 @@ class ExperimentRun:
                 "size_bytes": artefact_path.stat().st_size,
                 "sha256": _sha256(artefact_path),
             }
-        self.metadata["checkpoint"].update(
-            {
-                "best_fold": int(fold),
-                "best_score": float(score),
-                "files": checkpoint_files,
-            }
-        )
+        self.metadata["checkpoint"]["selected_checkpoint"] = {
+            "outer_fold": int(fold),
+            "epoch": None if selected_epoch is None else int(selected_epoch),
+            "validation_score": float(score),
+            "files": checkpoint_files,
+        }
         self._write_metadata()
 
     def complete(self, summary):
