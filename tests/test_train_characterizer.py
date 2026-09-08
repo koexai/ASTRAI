@@ -237,7 +237,7 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
                 "_load_fold_data",
                 return_value=fold_data,
             ),
-            mock.patch.object(train_characterizer, "_train_model"),
+            mock.patch.object(train_characterizer, "train_supervised_model"),
             mock.patch.object(
                 train_characterizer,
                 "_evaluate_characterizer",
@@ -245,20 +245,24 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
             ),
             mock.patch.object(
                 train_characterizer,
-                "SplitMLPRegressor",
+                "build_characterizer",
                 return_value=TrainingModel(),
             ),
-            mock.patch.object(train_characterizer, "TensorDataset"),
-            mock.patch.object(train_characterizer, "DataLoader"),
-            mock.patch.object(train_characterizer.torch.optim, "Adam"),
-            mock.patch.object(train_characterizer.torch.nn, "MSELoss"),
-            mock.patch.object(train_characterizer, "CosineAnnealingLR"),
-            mock.patch.object(train_characterizer.torch, "save") as save,
             mock.patch.object(
                 train_characterizer,
-                "copy_preprocessing_artifacts",
+                "build_training_loader",
             ),
-            mock.patch.object(train_characterizer, "print_final_stats"),
+            mock.patch.object(
+                train_characterizer,
+                "build_training_components",
+                return_value=(mock.Mock(), mock.Mock(), mock.Mock()),
+            ),
+            mock.patch.object(
+                train_characterizer,
+                "save_split_checkpoint",
+                return_value={"model": Path("/tmp/experiment/model.pth")},
+            ) as save_checkpoint,
+            mock.patch.object(train_characterizer, "print_metric_history"),
             redirect_stdout(io.StringIO()),
         ):
             train_characterizer.run_characterizer_training(
@@ -267,7 +271,7 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
                 exp_dir="/tmp/experiment",
             )
 
-        save.assert_called_once()
+        save_checkpoint.assert_called_once()
         self.assertEqual(experiment.record_fold.call_count, 2)
         experiment.record_checkpoint.assert_called_once()
         experiment.complete.assert_called_once()

@@ -187,6 +187,41 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
                     out_dir=run_dir,
                 )
 
+    def test_interrupted_run_is_recorded_as_failed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_dir = root / "interrupted-run"
+
+            with (
+                patch.object(preprocess, "_REPOSITORY_ROOT", root),
+                patch.object(
+                    preprocess,
+                    "save_code",
+                    side_effect=self._write_code_archive,
+                ),
+                patch.object(
+                    preprocess,
+                    "_generate_preprocessing_artefacts",
+                    side_effect=KeyboardInterrupt("preprocessing interrupted"),
+                ),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    preprocess.run_preprocessing(
+                        self.cfg,
+                        out_dir=run_dir,
+                    )
+
+            metadata = yaml.safe_load(
+                (run_dir / "metadata.yaml").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(metadata["run"]["status"], "failed")
+        self.assertEqual(metadata["run"]["error_type"], "KeyboardInterrupt")
+        self.assertEqual(
+            metadata["run"]["error_message"],
+            "preprocessing interrupted",
+        )
+
     def test_missing_config_is_rejected_before_creating_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

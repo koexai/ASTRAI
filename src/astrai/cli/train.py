@@ -22,14 +22,11 @@ import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
-from astrai.models.split_mlp import SplitMLPRegressor, MLPWithResiduals
-from astrai.models.unified_model import UnifiedModel
+from astrai.models.factories import build_unified_model
 from astrai.utils.metrics import get_rmse, get_mae, get_r_squared, get_rrmse
 from astrai.utils.checkpoints import (
     checkpoint_artefact_paths,
@@ -44,25 +41,21 @@ from astrai.utils.reproducibility import (
     build_unified_preprocessing_seed_plan,
     configure_torch_determinism,
     make_numpy_rng,
-    make_torch_generator,
-    seed_data_loader_worker,
+)
+from astrai.utils.training import (
+    build_training_components,
+    build_training_loader,
+    create_metric_history,
+    print_metric_history,
+    record_metric_values,
+    select_training_device,
 )
 from astrai.paths import resolve_config_path
 
 
 def print_final_stats(name, history):
-    """Print mean +/- std of all tracked metrics across K folds.
-
-    Parameters
-    ----------
-    name : str
-        Label for the metric block (e.g. "CHARACTERIZATION").
-    history : dict
-        Mapping from metric name to list of per-fold values.
-    """
-    print(f"\n--- {name} (10-Fold Mean) ---")
-    for k, v in history.items():
-        print(f"  {k}: {np.mean(v):.4f}  (+/- {np.std(v):.4f})")
+    """Compatibility wrapper for aggregate fold reporting."""
+    print_metric_history(name, history)
 
 
 def _preprocess_fold(
@@ -271,8 +264,8 @@ def _execute_unified_training(cfg, experiment, device):
         random_state=train_cfg["random_seed"],
     )
 
-    history_char = {"RMSE": [], "RRMSE": [], "MAE": [], "R2": []}
-    history_gen = {"RMSE": [], "RRMSE": [], "MAE": [], "R2": []}
+    history_char = create_metric_history()
+    history_gen = create_metric_history()
     best_global_r2 = -np.inf
 
     print(f"Starting Training Char + Gen with PCA ({n_pca} components)...")
@@ -325,39 +318,19 @@ def _execute_unified_training(cfg, experiment, device):
         configure_torch_determinism(training_seed_plan["model"])
         experiment.record_execution_environment(device=device)
 
-        train_ds = TensorDataset(
-            torch.FloatTensor(x_train_combined),
-            torch.FloatTensor(y_train_combined),
-        )
-        train_loader = DataLoader(
-            train_ds,
+        train_loader = build_training_loader(
+            x_train_combined,
+            y_train_combined,
             batch_size=train_cfg["batch_size"],
-            shuffle=True,
-            generator=make_torch_generator(training_seed_plan["data_loader"]),
-            worker_init_fn=seed_data_loader_worker,
+            seed=training_seed_plan["data_loader"],
         )
 
-        regressor = SplitMLPRegressor(
-            input_dim=n_pca,
-            width=model_cfg["width"],
-            num_params=n_params,
-            depth=model_cfg["depth"],
-            dropout=model_cfg["dropout"],
-        )
-        generator = MLPWithResiduals(
-            input_dim=n_params,
-            width=model_cfg["width"],
-            out_dim=n_pca,
-            depth=model_cfg["depth"],
-            dropout=model_cfg["dropout"],
-        )
-        model = UnifiedModel(regressor, generator).to(device)
+        model = build_unified_model(cfg).to(device)
 
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=train_cfg["learning_rate"]
+        optimizer, criterion, scheduler = build_training_components(
+            model,
+            train_cfg,
         )
-        criterion = torch.nn.MSELoss()
-        scheduler = CosineAnnealingLR(optimizer, T_max=train_cfg["epochs"])
 
         model.fit(
             train_loader,
@@ -384,9 +357,8 @@ def _execute_unified_training(cfg, experiment, device):
             device,
         )
 
-        for key, values in history_char.items():
-            values.append(char_m[key])
-            history_gen[key].append(gen_m[key])
+        record_metric_values(history_char, char_m)
+        record_metric_values(history_gen, gen_m)
 
         elapsed = time.time() - start_time
         print(
@@ -422,8 +394,8 @@ def _execute_unified_training(cfg, experiment, device):
     print("FINAL PERFORMANCE REPORT (Un-scaled metrics)")
     print(f"PCA Components: {n_pca}")
     print("=" * 50)
-    print_final_stats("CHARACTERIZATION", history_char)
-    print_final_stats("GENERATION", history_gen)
+    print_metric_history("CHARACTERIZATION", history_char)
+    print_metric_history("GENERATION", history_gen)
     print("=" * 50)
 
     experiment.complete(
@@ -441,7 +413,7 @@ def run_unified_training(
 ):
     """Train the unified model and return its isolated experiment directory."""
     train_cfg = cfg["training"]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_training_device()
     experiment = ExperimentRun.start(
         stage="unified",
         config=cfg,

@@ -23,11 +23,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import torch
-import joblib
-import yaml
 
-from astrai.models.split_mlp import SplitMLPRegressor, MLPWithResiduals
-from astrai.models.unified_model import UnifiedModel
 from astrai.utils.metrics import (
     get_rmse,
     get_mae,
@@ -35,15 +31,9 @@ from astrai.utils.metrics import (
     get_rrmse,
     compute_metrics,
 )
-from astrai.utils.checkpoints import experiment_artefact_path, load_data
+from astrai.utils.checkpoints import load_data, load_unified_model
+from astrai.utils.configuration import load_config
 from astrai.paths import resolve_config_path
-
-
-def load_config(path="configs/default.yaml"):
-    """Load and parse the YAML training configuration file.
-    Returns a dict."""
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def load_model(cfg, device, exp_dir=None):
@@ -68,42 +58,7 @@ def load_model(cfg, device, exp_dir=None):
     tuple
         ``(model, x_scaler, y_scaler, pca)`` ready for inference.
     """
-    n_pca = cfg["model"]["pca_components"]
-    n_params = cfg["data"]["n_params"]
-    width = cfg["model"]["width"]
-    depth = cfg["model"]["depth"]
-    dropout = cfg["model"]["dropout"]
-
-    def _path(key):
-        name = cfg["checkpoint"][key]
-        return experiment_artefact_path(exp_dir, name) if exp_dir else name
-
-    regressor = SplitMLPRegressor(
-        input_dim=n_pca,
-        width=width,
-        num_params=n_params,
-        depth=depth,
-        dropout=dropout,
-    )
-    generator = MLPWithResiduals(
-        input_dim=n_params,
-        width=width,
-        out_dim=n_pca,
-        depth=depth,
-        dropout=dropout,
-    )
-    model = UnifiedModel(regressor, generator).to(device)
-
-    model.load_state_dict(
-        torch.load(_path("model"), map_location=device, weights_only=True)
-    )
-    model.eval()
-
-    x_scaler = joblib.load(_path("x_scaler"))
-    y_scaler = joblib.load(_path("y_scaler"))
-    pca = joblib.load(_path("pca"))
-
-    return model, x_scaler, y_scaler, pca
+    return load_unified_model(cfg, device, exp_dir=exp_dir)
 
 
 def characterize(model, x, x_scaler, y_scaler, pca, device):

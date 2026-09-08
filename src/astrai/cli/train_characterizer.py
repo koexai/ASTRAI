@@ -16,33 +16,35 @@ import time
 import joblib
 import numpy as np
 import torch
-import yaml
 
-from torch.utils.data import DataLoader, TensorDataset
-from torch.optim.lr_scheduler import CosineAnnealingLR
-
-from astrai.cli.train import print_final_stats
-from astrai.models.split_mlp import SplitMLPRegressor
-from astrai.utils.array_dtypes import load_model_array
+from astrai.models.factories import build_characterizer
 from astrai.utils.metrics import (
     METRIC_NAMES,
     compute_parameter_metrics,
 )
 from astrai.utils.parameter_validation import validate_parameter_names
 from astrai.utils.checkpoints import (
-    checkpoint_artefact_paths,
-    copy_preprocessing_artifacts,
-    experiment_artefact_path,
+    save_split_checkpoint,
 )
+from astrai.utils.configuration import load_config
 from astrai.utils.fold_selection import resolve_fold_indices
 from astrai.utils.log_experiments import ExperimentRun, summarise_metric_history
 from astrai.utils.reproducibility import (
     build_training_seed_plan,
     configure_torch_determinism,
-    make_torch_generator,
-    seed_data_loader_worker,
 )
-from astrai.paths import resolve_config_path
+from astrai.utils.training import (
+    build_training_components,
+    build_training_loader,
+    combine_clean_and_augmented,
+    create_metric_history,
+    load_fold_arrays,
+    print_metric_history,
+    record_metric_values,
+    select_training_device,
+    train_supervised_model,
+)
+from astrai.paths import resolve_config_path, resolve_user_path
 
 
 def _load_fold_data(fold_dir):
@@ -59,56 +61,16 @@ def _load_fold_data(fold_dir):
     - x_test_pca: (n_test, n_pca)
     - y_train_scaled: (n_train, n_params)
     - y_test: (n_test, n_params)"""
-    x_train_clean_pca = load_model_array(
-        os.path.join(fold_dir, "x_train_clean_pca.npy")
+    return load_fold_arrays(
+        fold_dir,
+        (
+            "x_train_clean_pca.npy",
+            "x_train_aug_pca.npy",
+            "x_test_pca.npy",
+            "y_train_scaled.npy",
+            "y_test.npy",
+        ),
     )
-    x_train_aug_pca = load_model_array(
-        os.path.join(fold_dir, "x_train_aug_pca.npy")
-    )
-    x_test_pca = load_model_array(os.path.join(fold_dir, "x_test_pca.npy"))
-    y_train_scaled = load_model_array(
-        os.path.join(fold_dir, "y_train_scaled.npy")
-    )
-    y_test = load_model_array(os.path.join(fold_dir, "y_test.npy"))
-    return (
-        x_train_clean_pca,
-        x_train_aug_pca,
-        x_test_pca,
-        y_train_scaled,
-        y_test,
-    )
-
-
-def _train_model(
-    model, train_loader, optimizer, criterion, scheduler, epochs, device
-):
-    """Run the training loop for a single fold.
-    model: the PyTorch model to train
-    train_loader: DataLoader for the training data
-    optimizer: the optimizer to use (e.g. Adam)
-    criterion: the loss function (e.g. MSELoss)
-    scheduler: learning rate scheduler (e.g. CosineAnnealingLR)
-    epochs: number of training epochs
-    device: torch.device to run on (e.g. 'cuda' or 'cpu')
-    Prints training loss every 10 epochs."""
-    model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            optimizer.zero_grad()
-            pred = model(batch_x)
-            loss = criterion(pred, batch_y)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        scheduler.step()
-        if (epoch + 1) % 10 == 0:
-            avg = total_loss / len(train_loader)
-            cur_lr = optimizer.param_groups[0]["lr"]
-            print(
-                f"Epoch {epoch+1}/{epochs} - Loss: {avg:.6f} | LR: {cur_lr:.2e}"
-            )
 
 
 def _evaluate_characterizer(
@@ -239,8 +201,9 @@ def run_characterizer_training(
 
     held_out_fold = char_cfg["training"].get("held_out_fold")
     fold_indices = resolve_fold_indices(held_out_fold, n_splits)
+    prep_dir = resolve_user_path(prep_dir)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = select_training_device()
 
     experiment = ExperimentRun.start(
         stage="characterizer",
@@ -258,7 +221,7 @@ def run_characterizer_training(
     exp_dir = str(experiment.directory)
     print(f"Characterizer experiment directory: {exp_dir}")
 
-    history = {metric_name: [] for metric_name in METRIC_NAMES}
+    history = create_metric_history()
     parameter_history = _initialise_parameter_history(param_names)
     best_r2 = -np.inf
 
@@ -275,7 +238,7 @@ def run_characterizer_training(
 
         for fold_idx in fold_indices:
             start_time = time.time()
-            fold_dir = os.path.join(prep_dir, f"fold_{fold_idx}")
+            fold_dir = prep_dir / f"fold_{fold_idx}"
 
             (
                 x_train_clean_pca,
@@ -288,10 +251,13 @@ def run_characterizer_training(
                 f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
             )
 
-            x_train_combined = np.vstack(
-                [x_train_clean_pca, x_train_aug_pca]
+            x_train_combined, y_train_combined = (
+                combine_clean_and_augmented(
+                    x_train_clean_pca,
+                    x_train_aug_pca,
+                    y_train_scaled,
+                )
             )
-            y_train_combined = np.vstack([y_train_scaled, y_train_scaled])
 
             seed_plan = build_training_seed_plan(
                 base_seed,
@@ -306,35 +272,21 @@ def run_characterizer_training(
                 f"data_loader={seed_plan['data_loader']}"
             )
 
-            train_ds = TensorDataset(
-                torch.FloatTensor(x_train_combined),
-                torch.FloatTensor(y_train_combined),
-            )
-            train_loader = DataLoader(
-                train_ds,
+            train_loader = build_training_loader(
+                x_train_combined,
+                y_train_combined,
                 batch_size=char_cfg["training"]["batch_size"],
-                shuffle=True,
-                generator=make_torch_generator(seed_plan["data_loader"]),
-                worker_init_fn=seed_data_loader_worker,
+                seed=seed_plan["data_loader"],
             )
 
-            model = SplitMLPRegressor(
-                input_dim=n_pca,
-                width=char_cfg["model"]["width"],
-                num_params=n_params,
-                depth=char_cfg["model"]["depth"],
-                dropout=char_cfg["model"]["dropout"],
-            ).to(device)
+            model = build_characterizer(cfg).to(device)
 
-            optimizer = torch.optim.Adam(
-                model.parameters(), lr=char_cfg["training"]["learning_rate"]
-            )
-            criterion = torch.nn.MSELoss()
-            scheduler = CosineAnnealingLR(
-                optimizer, T_max=char_cfg["training"]["epochs"]
+            optimizer, criterion, scheduler = build_training_components(
+                model,
+                char_cfg["training"],
             )
 
-            _train_model(
+            train_supervised_model(
                 model,
                 train_loader,
                 optimizer,
@@ -349,8 +301,7 @@ def run_characterizer_training(
             )
             metrics = evaluation["aggregate"]
 
-            for key, values in history.items():
-                values.append(metrics[key])
+            record_metric_values(history, metrics)
             _record_parameter_metrics(
                 parameter_history,
                 evaluation["per_parameter"],
@@ -371,38 +322,27 @@ def run_characterizer_training(
 
             if metrics["R2"] > best_r2:
                 best_r2 = metrics["R2"]
-                torch.save(
-                    model.state_dict(),
-                    experiment_artefact_path(
-                        exp_dir,
-                        char_cfg["checkpoint"]["model"],
-                    ),
-                )
-                copy_preprocessing_artifacts(
-                    prep_dir, exp_dir, char_cfg["checkpoint"]
+                checkpoint_paths = save_split_checkpoint(
+                    exp_dir,
+                    char_cfg["checkpoint"],
+                    model,
+                    prep_dir,
                 )
                 experiment.record_checkpoint(
                     fold_idx,
                     best_r2,
-                    checkpoint_artefact_paths(
-                        exp_dir,
-                        char_cfg["checkpoint"],
-                    ),
+                    checkpoint_paths,
                 )
 
         print("\n" + "=" * 50)
         print("CHARACTERIZER - FINAL PERFORMANCE REPORT")
         print(f"PCA Components: {n_pca}")
         print("=" * 50)
-        if held_out_fold is None:
-            print_final_stats("CHARACTERIZATION", history)
-        else:
-            print(
-                f"\n--- CHARACTERIZATION "
-                f"(Held-out fold {held_out_fold}) ---"
-            )
-            for key, values in history.items():
-                print(f"  {key}: {values[0]:.4f}")
+        print_metric_history(
+            "CHARACTERIZATION",
+            history,
+            held_out_fold=held_out_fold,
+        )
         _print_parameter_final_stats(parameter_history, held_out_fold)
         print("=" * 50)
 
@@ -441,8 +381,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default_split.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
 
     run_characterizer_training(
         cfg,

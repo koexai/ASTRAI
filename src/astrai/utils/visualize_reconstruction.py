@@ -17,14 +17,11 @@ Usage::
 import argparse
 import numpy as np
 import torch
-import joblib
-import yaml
 import matplotlib.pyplot as plt
 
-from astrai.models.split_mlp import SplitMLPRegressor, MLPWithResiduals
-from astrai.models.unified_model import UnifiedModel
 from astrai.utils.augmentation import apply_lsst_pipeline
-from astrai.utils.checkpoints import experiment_artefact_path
+from astrai.utils.checkpoints import load_unified_model
+from astrai.utils.configuration import load_config
 from astrai.utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
 from astrai.cli.inference import load_data, load_model
 from astrai.paths import resolve_config_path
@@ -41,48 +38,7 @@ def load_from_experiment(exp_dir, cfg, device):
     y_scaler: the loaded StandardScaler for output parameters
     pca: the loaded PCA for input curves
     """
-    n_pca = cfg["model"]["pca_components"]
-    n_params = cfg["data"]["n_params"]
-    width = cfg["model"]["width"]
-    depth = cfg["model"]["depth"]
-    dropout = cfg["model"]["dropout"]
-
-    regressor = SplitMLPRegressor(
-        input_dim=n_pca,
-        width=width,
-        num_params=n_params,
-        depth=depth,
-        dropout=dropout,
-    )
-    generator = MLPWithResiduals(
-        input_dim=n_params,
-        width=width,
-        out_dim=n_pca,
-        depth=depth,
-        dropout=dropout,
-    )
-    model = UnifiedModel(regressor, generator).to(device)
-
-    model.load_state_dict(
-        torch.load(
-            experiment_artefact_path(exp_dir, cfg["checkpoint"]["model"]),
-            map_location=device,
-            weights_only=True,
-        )
-    )
-    model.eval()
-
-    x_scaler = joblib.load(
-        experiment_artefact_path(exp_dir, cfg["checkpoint"]["x_scaler"])
-    )
-    y_scaler = joblib.load(
-        experiment_artefact_path(exp_dir, cfg["checkpoint"]["y_scaler"])
-    )
-    pca = joblib.load(
-        experiment_artefact_path(exp_dir, cfg["checkpoint"]["pca"])
-    )
-
-    return model, x_scaler, y_scaler, pca
+    return load_unified_model(cfg, device, exp_dir=exp_dir)
 
 
 def reconstruct_all(model, x, x_scaler, pca, device):
@@ -291,8 +247,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_days = cfg["data"]["n_days"]

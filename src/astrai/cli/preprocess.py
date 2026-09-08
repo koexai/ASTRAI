@@ -34,6 +34,7 @@ from astrai.utils.array_dtypes import (
     as_model_array,
 )
 from astrai.utils.checkpoints import load_data
+from astrai.utils.configuration import load_config
 from astrai.utils.log_experiments import save_code
 from astrai.utils.reproducibility import (
     build_preprocessing_seed_plan,
@@ -440,7 +441,7 @@ def run_preprocessing(cfg, out_dir=None, config_path=None):
         save_code(run_dir, folder=_REPOSITORY_ROOT)
         _generate_preprocessing_artefacts(cfg, run_dir)
         array_artefacts = _array_artefact_metadata(run_dir)
-    except Exception as exc:
+    except BaseException as exc:
         metadata["run"].update(
             {
                 "status": "failed",
@@ -498,8 +499,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default_split.yaml")
 
-    with config_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_config(config_path)
 
     run_preprocessing(
         cfg,
