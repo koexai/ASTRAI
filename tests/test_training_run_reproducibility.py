@@ -30,7 +30,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             "characterizer": {
                 "model": {"width": 4, "depth": 1, "dropout": 0.2},
                 "training": {
-                    "held_out_fold": 1,
+                    "test_fold": 1,
                     "batch_size": 2,
                     "epochs": 2,
                     "learning_rate": 0.01,
@@ -45,7 +45,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             "generator": {
                 "model": {"width": 4, "depth": 1, "dropout": 0.2},
                 "training": {
-                    "held_out_fold": 1,
+                    "test_fold": 1,
                     "batch_size": 2,
                     "epochs": 2,
                     "learning_rate": 0.01,
@@ -77,6 +77,8 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
         y_test_scaled = y_scaler.transform(raw_parameters[4:6])
 
         arrays = {
+            "train_idx.npy": np.arange(4, dtype=np.int64),
+            "test_idx.npy": np.arange(4, 6, dtype=np.int64),
             "x_train_clean_pca.npy": clean_pca,
             "x_train_aug_pca.npy": augmented_pca,
             "x_test_pca.npy": pca.transform(
@@ -89,7 +91,13 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             "x_test_clean.npy": raw_curves[4:6],
         }
         for filename, values in arrays.items():
-            np.save(fold_dir / filename, values.astype(np.float32))
+            np.save(fold_dir / filename, values)
+
+        np.save(prep_dir / "x_raw.npy", raw_curves.astype(np.float32))
+        np.save(
+            prep_dir / "y_transformed.npy",
+            raw_parameters.astype(np.float32),
+        )
 
         joblib.dump(x_scaler, prep_dir / "x_scaler.pkl")
         joblib.dump(y_scaler, prep_dir / "y_scaler.pkl")
@@ -124,7 +132,17 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
         )
         self.assertEqual(metadata["preprocessing"]["source_run_status"], "completed")
         self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 5)
-        self.assertEqual(metadata["checkpoint"]["best_fold"], 1)
+        self.assertEqual(
+            metadata["checkpoint"]["selected_checkpoint"]["outer_fold"],
+            1,
+        )
+        self.assertIsNotNone(
+            metadata["checkpoint"]["selected_checkpoint"]["epoch"]
+        )
+        self.assertEqual(
+            metadata["checkpoint"]["selection_policy"]["dataset"],
+            "validation",
+        )
         self.assertIn(model_name, metadata["artefacts"])
         self.assertIn("preprocessing_metadata.yaml", metadata["artefacts"])
 

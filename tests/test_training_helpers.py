@@ -186,9 +186,9 @@ class TrainingHelperTests(unittest.TestCase):
             print_metric_history(
                 "GENERATION",
                 {name: values[:1] for name, values in history.items()},
-                held_out_fold=6,
+                test_fold=6,
             )
-        self.assertIn("GENERATION (Held-out fold 6)", output.getvalue())
+        self.assertIn("GENERATION (Test fold 6)", output.getvalue())
         self.assertIn("R2: 0.7000", output.getvalue())
 
 

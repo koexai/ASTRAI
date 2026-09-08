@@ -334,6 +334,7 @@ self-describing.
 The configured `random_seed` is the base for independent deterministic
 streams. Stable NumPy `SeedSequence` namespaces derive separate seeds for PCA,
 each fold's augmentation, model initialisation and DataLoader shuffling. The
+validation split has its own derived stream. The
 K-fold splitter continues to use the configured base seed directly, preserving
 the configured fold assignment.
 
@@ -375,14 +376,18 @@ astrai train-characterizer \
 
 After each evaluated fold, the report includes RMSE, RRMSE, MAE and R2 for
 every entry in `data.param_names` alongside the existing aggregate R2. The
-final report preserves all existing unweighted aggregate metrics and also
-shows the mean and standard deviation of every per-parameter metric across
-folds; a configured `held_out_fold` produces a single-fold report instead.
+final report preserves all existing unweighted aggregate test metrics and also
+shows the mean and standard deviation of every per-parameter test metric across
+folds; a configured `test_fold` produces a single-fold report instead. The
+legacy `held_out_fold` spelling remains accepted when `test_fold` is absent.
 
-Historical aggregate metrics and checkpoint selection remain in transformed
-target space after reversing target standardisation. Per-parameter metrics are
+Checkpoint selection uses validation data only. Its default `R2` score remains
+the historical unweighted aggregate in transformed target space after
+reversing target standardisation. Per-parameter validation and test metrics are
 reported both in transformed space and in physical units; physical RMSE and
-MAE are not averaged across parameters with heterogeneous units.
+MAE are not averaged across parameters with heterogeneous units. Test data is
+reserved exclusively for final performance estimation and never participates
+in epoch or fold selection.
 
 ### Generator Training (`astrai train-generator`)
 
@@ -540,8 +545,8 @@ All hyperparameters are set via YAML config files in `configs/`.
 | `data` | `format`, `target_transform`, `n_days`, `n_params`, `param_names`, `samples_per_day` |
 | `preprocessing` | `pca_components` (32), `n_splits` (K-Fold), `random_seed` |
 | `augmentation` | `noise_std` (0.05) |
-| `characterizer` | `model` (width, depth, dropout), `training` (batch_size, epochs, lr) |
-| `generator` | `model` (width, depth, dropout), `training` (batch_size, epochs, lr) |
+| `characterizer` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
+| `generator` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 
 ### `configs/default.yaml` (unified model)
 
@@ -549,8 +554,22 @@ All hyperparameters are set via YAML config files in `configs/`.
 |---------|---------------|
 | `data` | Same as above |
 | `model` | `pca_components`, `width`, `depth`, `dropout` |
-| `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits`, `random_seed` |
+| `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits`, `random_seed`, validation and selection controls |
 | `loss` | `alpha_char`, `alpha_gen` (loss weights) |
+
+Every training section accepts `validation_fraction` and
+`checkpoint_selection.metric`. Supported selection metrics are `R2` (the
+default, maximised), `RMSE`, `RRMSE` and `MAE` (minimised). The metric space is
+fixed by the model contract: transformed aggregate characterisation for the
+Characterizer and unified model, and flattened light-curve space for the
+Generator.
+
+`epochs` is always the maximum epoch count. `early_stopping.enabled` defaults
+to `false`, so all configured epochs run while the best validation epoch is
+still restored afterwards. When enabled, `patience` controls interruption and
+`min_delta` controls only whether an improvement resets patience. Checkpoint
+selection itself uses every strict improvement and retains the first epoch on
+a tie.
 
 ### Data Formats
 
@@ -570,7 +589,7 @@ or overwritten.
 ```
 experiments/
   characterizer/YYYYMMDD_HHMMSS_microseconds/
-    best_characterizer.pth       # Model weights (best fold by R2)
+    best_characterizer.pth       # Validation-selected model weights
     best_char_x_scaler.pkl       # Feature scaler
     best_char_y_scaler.pkl       # Target scaler
     best_char_pca.pkl            # PCA transformer
@@ -578,6 +597,11 @@ experiments/
     config.yaml                  # Effective configuration
     preprocessing_metadata.yaml  # Input preprocessing provenance
     metadata.yaml                # Lifecycle, results and artefact manifest
+    fold_1/
+      training_indices.npy       # Rows used for optimisation
+      validation_indices.npy     # Rows used for model selection
+      test_indices.npy           # Rows used only for final estimation
+      training_trace.csv         # Per-epoch loss and selection score
   generator/YYYYMMDD_HHMMSS_microseconds/
     ...
 ```
@@ -586,15 +610,16 @@ The experiment metadata is written when a run starts, after every completed
 fold and whenever the best checkpoint changes. It records the run stage and
 status, UTC times, Git revision and dirty state, effective configuration,
 device, parameter order, dtype contract, selected folds, base and derived
-seeds, runtime environment, per-fold and summary metrics, checkpoint selection
+seeds, explicit data indices, validation and test metrics, checkpoint selection
 and SHA-256 digests for every persisted artefact. The runtime snapshot includes
 Python, the operating-system platform, installed distribution versions,
 PyTorch backends, thread counts and effective deterministic settings. Failures
 retain their error and any partial fold records. Characterizer and Generator
 runs started by `astrai pipeline` share a
 `pipeline_run_id`, and each snapshots the metadata of its completed
-preprocessing input. Older preprocessing directories without metadata remain
-accepted and are explicitly marked as legacy inputs. Versioned preprocessing
+preprocessing input. Validation-based split training requires the current raw
+arrays and global fold-index files; legacy preprocessing directories without
+those unambiguous row mappings must be regenerated. Versioned preprocessing
 runs must use the current self-describing target contract.
 
 Source provenance follows the installed `astrai` package location rather than
@@ -621,13 +646,15 @@ configuration compatibility while keeping all output within the current run.
 | Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
 | Training experiments | 2 | Runtime environment and effective deterministic execution settings |
 | Training experiments | 3 | Target-transformation contract and explicit metric-space metadata |
+| Training experiments | 4 | Explicit train/validation/test indices, validation-based epoch and fold selection, early-stopping evidence and unambiguous selected-checkpoint metadata |
 
 ## Metrics
 
 Evaluation reports R2, RMSE, RRMSE, and MAE:
-- **Characterization**: named per-parameter metrics in transformed and physical
-  spaces. The historical unweighted aggregate and checkpoint selection remain
-  in transformed space; inference reports bootstrap confidence intervals.
+- **Characterization**: named per-parameter validation and test metrics in
+  transformed and physical spaces. The historical unweighted aggregate and
+  validation-only checkpoint selection remain in transformed space; inference
+  reports bootstrap confidence intervals.
 - **Generation**: flattened across all time-steps and samples.
 
 ## Support
