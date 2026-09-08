@@ -1,4 +1,5 @@
 data:
+  target_transform: log1p
   format: parquet
   path: data/dataset_preprocessed.parquet
   n_days: 1601

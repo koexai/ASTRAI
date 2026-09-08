@@ -9,7 +9,6 @@ import shutil
 from pathlib import Path
 import joblib
 import torch
-import numpy as np
 
 from astrai.models.factories import (
     build_characterizer,
@@ -18,6 +17,10 @@ from astrai.models.factories import (
 )
 from astrai.utils.configuration import load_config
 from astrai.utils.data import load_raw_data
+from astrai.utils.target_transformations import (
+    experiment_target_contract,
+    physical_to_transformed,
+)
 
 
 def experiment_artefact_path(exp_dir, configured_path):
@@ -81,6 +84,7 @@ def load_characterizer(cfg, device, exp_dir):
     y_scaler: the loaded StandardScaler for target parameters
     pca: the loaded PCA transformer
     """
+    experiment_target_contract(exp_dir, cfg)
     char_cfg = cfg["characterizer"]
     model = build_characterizer(cfg).to(device)
 
@@ -109,6 +113,7 @@ def load_generator(cfg, device, exp_dir):
     y_scaler: the loaded StandardScaler for target parameters
     pca: the loaded PCA transformer
     """
+    experiment_target_contract(exp_dir, cfg)
     gen_cfg = cfg["generator"]
     model = build_generator(cfg).to(device)
 
@@ -128,6 +133,7 @@ def load_generator(cfg, device, exp_dir):
 
 def load_unified_model(cfg, device, exp_dir=None):
     """Load a unified model and its preprocessing artefacts."""
+    experiment_target_contract(exp_dir, cfg)
     model = build_unified_model(cfg).to(device)
     ckpt = cfg["checkpoint"]
     model.load_state_dict(
@@ -144,7 +150,7 @@ def load_unified_model(cfg, device, exp_dir=None):
 
 
 def load_data(data_path, cfg):
-    """Load curves and optional labels from configured data source.
+    """Load curves and optional transformed labels for legacy callers.
 
     Supports two formats controlled by ``cfg["data"]["format"]``:
 
@@ -154,7 +160,10 @@ def load_data(data_path, cfg):
       parameters. When *data_path* is ``None`` the paths are taken from
       the config keys ``curves_path`` and ``params_path``.
 
-    When labels are present, physical parameters are log1p-transformed.
+    New code should use :func:`astrai.utils.data.load_raw_data` and call the
+    target transformation explicitly at the physical/model-space boundary.
+    When labels are present, this compatibility adapter applies the configured
+    canonical transformation once.
 
     Parameters
     ----------
@@ -169,8 +178,12 @@ def load_data(data_path, cfg):
     tuple
         ``(x, y)`` where *y* is ``None`` when labels are absent.
     """
-    x, y_raw = load_raw_data(data_path, cfg)
-    y = None if y_raw is None else np.log1p(y_raw)
+    x, y_physical = load_raw_data(data_path, cfg)
+    y = (
+        None
+        if y_physical is None
+        else physical_to_transformed(y_physical, cfg)
+    )
     return x, y
 
 

@@ -1,4 +1,5 @@
 data:
+  target_transform: log1p
   format: npy_csv
   curves_path: data/synthetic/4_parameters/analyticModelEXPSOE_Run1_20230328_07-55-00.npy
   params_path: data/synthetic/4_parameters/lista_amEXPSOE.csv
