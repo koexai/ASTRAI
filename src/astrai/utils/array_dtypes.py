@@ -39,3 +39,8 @@ def as_index_array(values):
 def load_model_array(path):
     """Load a model array and normalise legacy numeric dtypes to ``float32``."""
     return as_model_array(np.load(Path(path), allow_pickle=False))
+
+
+def load_index_array(path):
+    """Load and validate a persisted row-index array as ``int64``."""
+    return as_index_array(np.load(Path(path), allow_pickle=False))

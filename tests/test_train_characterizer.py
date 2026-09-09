@@ -1,7 +1,6 @@
 import io
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -26,17 +25,6 @@ class FixedPredictionModel:
 
     def __call__(self, _):
         return torch.tensor(self.predictions, dtype=torch.float32)
-
-
-class TrainingModel:
-    def to(self, _device):
-        return self
-
-    def parameters(self):
-        return ()
-
-    def state_dict(self):
-        return {"weight": 1.0}
 
 
 def make_parameter_history():
@@ -144,150 +132,31 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
         self.assertEqual(history["Mass"]["RMSE"], [1.0])
         self.assertEqual(history["Energy"]["R2"], [0.6])
 
-    def test_checkpoint_selection_still_uses_aggregate_r2(self):
-        cfg = {
-            "data": {
-                "n_params": 2,
-                "param_names": ["Mass", "Energy"],
-            },
-            "preprocessing": {
-                "pca_components": 1,
-                "n_splits": 2,
-                "random_seed": 42,
-            },
-            "characterizer": {
-                "model": {
-                    "width": 4,
-                    "depth": 1,
-                    "dropout": 0.0,
-                },
-                "training": {
-                    "batch_size": 2,
-                    "learning_rate": 0.001,
-                    "epochs": 1,
-                    "held_out_fold": None,
-                },
-                "checkpoint": {
-                    "model": "best_characterizer.pth",
-                },
-            },
-        }
-        fold_data = (
-            np.ones((2, 1)),
-            np.ones((2, 1)),
-            np.ones((2, 1)),
-            np.ones((2, 2)),
-            np.ones((2, 2)),
-        )
-        first_evaluation = {
-            "transformed": {
-                "aggregate": {
-                "RMSE": 1.0,
-                "RRMSE": 0.1,
-                "MAE": 0.8,
-                "R2": 0.8,
-                },
-                "per_parameter": {
-                "Mass": {
-                    "RMSE": 1.0,
-                    "RRMSE": 0.1,
-                    "MAE": 0.8,
-                    "R2": 0.1,
-                },
-                "Energy": {
-                    "RMSE": 2.0,
-                    "RRMSE": 0.2,
-                    "MAE": 1.5,
-                    "R2": 0.2,
-                },
-                },
-            },
-            "physical": {"per_parameter": {}},
-        }
-        first_evaluation["physical"]["per_parameter"] = first_evaluation[
-            "transformed"
-        ]["per_parameter"]
-        second_evaluation = {
-            "transformed": {
-                "aggregate": {
-                "RMSE": 0.9,
-                "RRMSE": 0.09,
-                "MAE": 0.7,
-                "R2": 0.7,
-                },
-                "per_parameter": {
-                "Mass": {
-                    "RMSE": 0.5,
-                    "RRMSE": 0.05,
-                    "MAE": 0.4,
-                    "R2": 0.99,
-                },
-                "Energy": {
-                    "RMSE": 0.6,
-                    "RRMSE": 0.06,
-                    "MAE": 0.5,
-                    "R2": 0.99,
-                },
-                },
-            },
-            "physical": {"per_parameter": {}},
-        }
-        second_evaluation["physical"]["per_parameter"] = second_evaluation[
-            "transformed"
-        ]["per_parameter"]
+    def test_complete_evaluation_keeps_checkpoint_metric_in_transformed_space(self):
+        true = np.array([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]])
+        predictions = np.array([[1.0, 12.0], [3.0, 18.0], [2.0, 33.0]])
+        model = FixedPredictionModel(predictions)
 
-        experiment = mock.Mock()
-        experiment.directory = Path("/tmp/experiment")
-
-        with (
-            mock.patch.object(
-                train_characterizer.ExperimentRun,
-                "start",
-                return_value=experiment,
-            ),
-            mock.patch.object(
-                train_characterizer,
-                "_load_fold_data",
-                return_value=fold_data,
-            ),
-            mock.patch.object(train_characterizer, "train_supervised_model"),
-            mock.patch.object(
-                train_characterizer,
-                "_evaluate_characterizer",
-                side_effect=(first_evaluation, second_evaluation),
-            ),
-            mock.patch.object(
-                train_characterizer,
-                "build_characterizer",
-                return_value=TrainingModel(),
-            ),
-            mock.patch.object(
-                train_characterizer,
-                "build_training_loader",
-            ),
-            mock.patch.object(
-                train_characterizer,
-                "build_training_components",
-                return_value=(mock.Mock(), mock.Mock(), mock.Mock()),
-            ),
-            mock.patch.object(
-                train_characterizer,
-                "save_split_checkpoint",
-                return_value={"model": Path("/tmp/experiment/model.pth")},
-            ) as save_checkpoint,
-            mock.patch.object(train_characterizer, "print_metric_history"),
-            redirect_stdout(io.StringIO()),
+        with mock.patch.object(
+            train_characterizer.joblib,
+            "load",
+            return_value=IdentityScaler(),
         ):
-            train_characterizer.run_characterizer_training(
-                cfg,
-                prep_dir="/tmp/preprocessed",
-                exp_dir="/tmp/experiment",
+            evaluation = train_characterizer._evaluate_characterizer(
+                model,
+                np.ones((3, 2)),
+                true,
+                ("Mass", "Energy"),
+                "/tmp/preprocessed",
+                torch.device("cpu"),
+                {"data": {"target_transform": "log1p"}},
             )
 
-        save_checkpoint.assert_called_once()
-        self.assertEqual(experiment.record_fold.call_count, 2)
-        experiment.record_checkpoint.assert_called_once()
-        experiment.complete.assert_called_once()
+        self.assertAlmostEqual(
+            evaluation["transformed"]["aggregate"]["R2"],
+            (0.0 + 0.915) / 2.0,
+        )
+        self.assertNotIn("aggregate", evaluation["physical"])
 
     def test_prints_multi_fold_parameter_statistics(self):
         output = io.StringIO()
@@ -295,7 +164,7 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
         with redirect_stdout(output):
             train_characterizer._print_parameter_final_stats(
                 make_parameter_history(),
-                held_out_fold=None,
+                test_fold=None,
             )
 
         report = output.getvalue()
@@ -304,7 +173,7 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
         self.assertIn("RMSE: 2.0000  (+/- 1.0000)", report)
         self.assertIn("R2: 0.8000  (+/- 0.1000)", report)
 
-    def test_prints_single_held_out_fold_parameter_values(self):
+    def test_prints_single_test_fold_parameter_values(self):
         history = make_parameter_history()
         for metric_history in history.values():
             for metric_name in metric_history:
@@ -314,12 +183,12 @@ class CharacterizerMetricIntegrationTests(unittest.TestCase):
         with redirect_stdout(output):
             train_characterizer._print_parameter_final_stats(
                 history,
-                held_out_fold=6,
+                test_fold=6,
             )
 
         report = output.getvalue()
         self.assertIn(
-            "PER-PARAMETER CHARACTERIZATION (Held-out fold 6)",
+            "PER-PARAMETER CHARACTERIZATION (Test fold 6)",
             report,
         )
         self.assertIn("Mass: RMSE=1.000000", report)

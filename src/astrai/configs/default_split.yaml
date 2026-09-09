@@ -26,12 +26,18 @@ characterizer:
     depth: 10
     dropout: 0.1
   training:
-    # Use null to run all cross-validation splits, or an integer to
-    # select one held-out fold.
-    held_out_fold: null
+    # Use null to run all outer folds, or select one fold reserved for test.
+    test_fold: null
     batch_size: 4096
     epochs: 1000
     learning_rate: 0.001
+    validation_fraction: 0.1
+    checkpoint_selection:
+      metric: R2
+    early_stopping:
+      enabled: false
+      patience: 100
+      min_delta: 0.0
   checkpoint:
     model: best_characterizer.pth
     x_scaler: best_char_x_scaler.pkl
@@ -45,12 +51,18 @@ generator:
     depth: 10
     dropout: 0.1
   training:
-    # Use null to run all cross-validation splits, or an integer to
-    # select one held-out fold.
-    held_out_fold: null
+    # Use null to run all outer folds, or select one fold reserved for test.
+    test_fold: null
     batch_size: 4096
     epochs: 1000
     learning_rate: 0.001
+    validation_fraction: 0.1
+    checkpoint_selection:
+      metric: R2
+    early_stopping:
+      enabled: false
+      patience: 100
+      min_delta: 0.0
   checkpoint:
     model: best_generator.pth
     x_scaler: best_gen_x_scaler.pkl

@@ -145,13 +145,46 @@ class ExperimentRunTests(unittest.TestCase):
             )
             checkpoint = run_dir / "model.pth"
             checkpoint.write_bytes(b"weights")
+            index_files = run.save_fold_indices(
+                1,
+                [0, 1],
+                [2],
+                [3],
+            )
+            trace_path = run.save_training_trace(
+                1,
+                [
+                    {
+                        "epoch": 1,
+                        "training_loss": 0.5,
+                        "validation_selection_score": 0.75,
+                        "learning_rate": 0.001,
+                        "selected_checkpoint": True,
+                    }
+                ],
+            )
             run.record_fold(
                 1,
-                {"aggregate": {"R2": np.float64(0.75)}},
+                {
+                    "validation": {"aggregate": {"R2": np.float64(0.75)}},
+                    "test": {"aggregate": {"R2": np.float64(0.70)}},
+                },
                 {"model": np.int64(123), "data_loader": 456},
                 1.25,
+                selection={
+                    "fold_selected_epoch": 1,
+                    "fold_selected_validation_score": 0.75,
+                },
+                training={"maximum_epochs": 10, "epochs_completed": 10},
+                index_files=index_files,
+                training_trace=trace_path,
             )
-            run.record_checkpoint(1, np.float64(0.75), {"model": checkpoint})
+            run.record_checkpoint(
+                1,
+                np.float64(0.75),
+                {"model": checkpoint},
+                selected_epoch=1,
+            )
             run.complete({"aggregate": {"R2": {"mean": 0.75}}})
 
             metadata = self._metadata(run_dir)
@@ -159,7 +192,7 @@ class ExperimentRunTests(unittest.TestCase):
                 (run_dir / "config.yaml").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(metadata["experiment_metadata_version"], 3)
+        self.assertEqual(metadata["experiment_metadata_version"], 4)
         self.assertEqual(metadata["run"]["status"], "completed")
         self.assertEqual(metadata["run"]["stage"], "characterizer")
         self.assertEqual(metadata["run"]["pipeline_run_id"], "pipeline-123")
@@ -191,13 +224,41 @@ class ExperimentRunTests(unittest.TestCase):
             ],
             "transformed",
         )
-        self.assertEqual(metadata["checkpoint"]["best_fold"], 1)
-        self.assertEqual(metadata["checkpoint"]["best_score"], 0.75)
+        self.assertEqual(metadata["results"]["summary_dataset"], "test")
+        self.assertIn(
+            "checkpoint selection",
+            metadata["results"]["dataset_roles"]["validation"],
+        )
+        self.assertEqual(
+            metadata["checkpoint"]["selected_checkpoint"]["outer_fold"],
+            1,
+        )
+        self.assertEqual(
+            metadata["checkpoint"]["selected_checkpoint"][
+                "validation_score"
+            ],
+            0.75,
+        )
+        self.assertEqual(
+            metadata["results"]["folds"][0]["checkpoint_selection"],
+            {
+                "fold_selected_epoch": 1,
+                "fold_selected_validation_score": 0.75,
+            },
+        )
+        self.assertEqual(
+            set(metadata["results"]["folds"][0]["indices"]),
+            {"training", "validation", "test"},
+        )
         self.assertEqual(
             set(metadata["artefacts"]),
             {
                 "code.zip",
                 "config.yaml",
+                "fold_1/test_indices.npy",
+                "fold_1/training_indices.npy",
+                "fold_1/training_trace.csv",
+                "fold_1/validation_indices.npy",
                 "model.pth",
                 "preprocessing_metadata.yaml",
             },
@@ -233,7 +294,9 @@ class ExperimentRunTests(unittest.TestCase):
             metadata = self._metadata(run.directory)
 
         self.assertEqual(
-            metadata["checkpoint"]["files"]["model"]["path"],
+            metadata["checkpoint"]["selected_checkpoint"]["files"][
+                "model"
+            ]["path"],
             "model.pth",
         )
 

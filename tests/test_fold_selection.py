@@ -17,22 +17,22 @@ class ResolveFoldIndicesTests(unittest.TestCase):
         )
 
     def test_out_of_range_fold_is_rejected(self):
-        for held_out_fold in (-1, 0, 11):
-            with self.subTest(held_out_fold=held_out_fold):
+        for test_fold in (-1, 0, 11):
+            with self.subTest(test_fold=test_fold):
                 with self.assertRaisesRegex(
                     ValueError,
-                    "held_out_fold must be between 1 and 10",
+                    "test_fold must be between 1 and 10",
                 ):
-                    resolve_fold_indices(held_out_fold, 10)
+                    resolve_fold_indices(test_fold, 10)
 
     def test_non_integer_fold_is_rejected(self):
-        for held_out_fold in (True, False, 3.0, "3"):
-            with self.subTest(held_out_fold=held_out_fold):
+        for test_fold in (True, False, 3.0, "3"):
+            with self.subTest(test_fold=test_fold):
                 with self.assertRaisesRegex(
                     TypeError,
-                    "held_out_fold must be an integer or null",
+                    "test_fold must be an integer or null",
                 ):
-                    resolve_fold_indices(held_out_fold, 10)
+                    resolve_fold_indices(test_fold, 10)
 
 
 if __name__ == "__main__":

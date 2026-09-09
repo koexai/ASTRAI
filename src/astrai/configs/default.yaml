@@ -14,6 +14,13 @@ training:
   n_splits: 2
   # Single base seed; stage-specific and fold-specific seeds are derived.
   random_seed: 42
+  validation_fraction: 0.1
+  checkpoint_selection:
+    metric: R2
+  early_stopping:
+    enabled: false
+    patience: 100
+    min_delta: 0.0
 
 model:
   pca_components: 32

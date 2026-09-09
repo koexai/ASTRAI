@@ -9,8 +9,8 @@ Orchestrates the full training pipeline:
    b. Standardize features and targets; fit PCA on clean training data.
    c. Instantiate the UnifiedModel (SplitMLP regressor + residual generator).
    d. Train with a weighted composite loss (characterization + generation).
-   e. Evaluate on the held-out fold and record metrics.
-4. Report aggregate cross-validation statistics and persist the best checkpoint.
+   e. Select an epoch on validation and evaluate once on the test fold.
+4. Report test statistics and persist the validation-selected checkpoint.
 
 Usage::
 
@@ -29,6 +29,7 @@ from sklearn.decomposition import PCA
 from astrai.models.factories import build_unified_model
 from astrai.utils.metrics import (
     METRIC_NAMES,
+    compute_selection_metric,
     compute_target_metrics,
     get_rmse,
     get_mae,
@@ -55,12 +56,17 @@ from astrai.utils.reproducibility import (
     make_numpy_rng,
 )
 from astrai.utils.training import (
+    assert_selected_validation_score,
     build_training_components,
     build_training_loader,
+    build_validation_selection_tracker,
     create_metric_history,
+    is_strictly_better_score,
     print_metric_history,
     record_metric_values,
+    resolve_training_control,
     select_training_device,
+    split_development_indices,
 )
 from astrai.paths import resolve_config_path
 
@@ -72,8 +78,10 @@ def print_final_stats(name, history):
 
 def _preprocess_fold(
     x_train_clean,
+    x_validation_clean,
     x_test_clean,
     y_train,
+    y_validation,
     y_test,
     n_pca,
     noise_std,
@@ -88,12 +96,16 @@ def _preprocess_fold(
     ----------
     x_train_clean : np.ndarray
         Clean training curves, shape (n_train_clean, n_timepoints).
+    x_validation_clean : np.ndarray
+        Clean validation curves used for model selection.
     x_test_clean : np.ndarray
-        Clean test curves, shape (n_test, n_timepoints).
+        Clean test curves reserved for final performance estimation.
     y_train : np.ndarray
         Training parameters, shape (n_train, n_params).
+    y_validation : np.ndarray
+        Validation parameters in transformed target space.
     y_test : np.ndarray
-        Test parameters, shape (n_test, n_params).
+        Test parameters in transformed target space.
     n_pca : int
         Number of PCA components to keep.
     noise_std : float
@@ -116,6 +128,8 @@ def _preprocess_fold(
     y_train_combined : np.ndarray
         Scaled training parameters (duplicated for augmented data),
         shape (n_train_combined, n_params).
+    x_validation_pca, y_validation_scaled : np.ndarray
+        Model-ready validation inputs and parameters.
     x_test_pca : np.ndarray
         PCA-transformed test curves, shape (n_test, n_pca).
     y_test_scaled : np.ndarray
@@ -140,10 +154,12 @@ def _preprocess_fold(
     x_scaler.fit(x_train_clean)
     x_train_clean_scaled = x_scaler.transform(x_train_clean)
     x_train_aug_scaled = x_scaler.transform(x_train_aug)
+    x_validation_scaled = x_scaler.transform(x_validation_clean)
     x_test_scaled = x_scaler.transform(x_test_clean)
 
     y_scaler = StandardScaler()
     y_train_scaled = y_scaler.fit_transform(y_train)
+    y_validation_scaled = y_scaler.transform(y_validation)
     y_test_scaled = y_scaler.transform(y_test)
 
     pca = PCA(n_components=n_pca, random_state=pca_seed)
@@ -155,6 +171,7 @@ def _preprocess_fold(
 
     x_train_clean_pca = pca.transform(x_train_clean_scaled)
     x_train_aug_pca = pca.transform(x_train_aug_scaled)
+    x_validation_pca = pca.transform(x_validation_scaled)
     x_test_pca = pca.transform(x_test_scaled)
 
     x_train_combined = np.vstack([x_train_clean_pca, x_train_aug_pca])
@@ -163,6 +180,8 @@ def _preprocess_fold(
     return (
         x_train_combined,
         y_train_combined,
+        x_validation_pca,
+        y_validation_scaled,
         x_test_pca,
         y_test_scaled,
         x_scaler,
@@ -173,10 +192,10 @@ def _preprocess_fold(
 
 def _evaluate_fold(
     model,
-    x_test_pca,
-    y_test_scaled,
-    y_test,
-    x_test_clean,
+    inputs_pca,
+    parameters_scaled,
+    parameters_transformed,
+    target_curves,
     y_scaler,
     pca,
     x_scaler,
@@ -184,12 +203,12 @@ def _evaluate_fold(
     device,
     cfg=None,
 ):
-    """Run evaluation on the held-out fold and return metric dicts.
-    model: the trained UnifiedModel to evaluate
-    x_test_pca: (n_test, n_pca) PCA-transformed test curves
-    y_test_scaled: (n_test, n_params) scaled test parameters
-    y_test: (n_test, n_params) true test parameters (unscaled)
-    x_test_clean: (n_test, n_timepoints) true test curves (unscaled)
+    """Run complete evaluation on an explicit validation or test dataset.
+    model: the restored UnifiedModel to evaluate
+    inputs_pca: PCA-transformed validation or test curves
+    parameters_scaled: scaled validation or test parameters
+    parameters_transformed: true parameters in transformed target space
+    target_curves: true curves in original light-curve space
     y_scaler: fitted Scaler for parameters (to inverse transform predictions)
     pca: fitted PCA object (to inverse transform predicted curves)
     x_scaler: fitted Scaler for curves (to inverse transform predicted curves)
@@ -197,17 +216,17 @@ def _evaluate_fold(
     device: torch.device to run on
     Returns:
     - char_metrics: dict of characterization metrics (RMSE, RRMSE, MAE, R2)
-        comparing predicted parameters to y_test
+        comparing predicted parameters to transformed targets
     - gen_metrics: dict of generation metrics (RMSE, RRMSE, MAE, R2)
-        comparing reconstructed curves to x_test_clean
+        comparing reconstructed curves to original target curves
     """
     model.eval()
     with torch.no_grad():
-        x_test_t = torch.FloatTensor(x_test_pca).to(device)
-        y_test_t = torch.FloatTensor(y_test_scaled).to(device)
+        inputs_tensor = torch.FloatTensor(inputs_pca).to(device)
+        parameters_tensor = torch.FloatTensor(parameters_scaled).to(device)
 
-        pred_params_sc = model.regressor(x_test_t).cpu().numpy()
-        pred_curves_pca = model.generator(y_test_t).cpu().numpy()
+        pred_params_sc = model.regressor(inputs_tensor).cpu().numpy()
+        pred_curves_pca = model.generator(parameters_tensor).cpu().numpy()
 
         pred_params_transformed = scaled_to_transformed(
             pred_params_sc,
@@ -222,18 +241,32 @@ def _evaluate_fold(
         None if cfg is None else cfg["data"].get("param_names"),
     )
     char_metrics = compute_target_metrics(
-        y_test,
+        parameters_transformed,
         pred_params_transformed,
         param_names,
         cfg,
     )
     gen_metrics = {
-        "RMSE": get_rmse(x_test_clean.ravel(), pred_curves.ravel()),
-        "RRMSE": get_rrmse(x_test_clean.ravel(), pred_curves.ravel()),
-        "MAE": get_mae(x_test_clean.ravel(), pred_curves.ravel()),
-        "R2": get_r_squared(x_test_clean.ravel(), pred_curves.ravel()),
+        "RMSE": get_rmse(target_curves.ravel(), pred_curves.ravel()),
+        "RRMSE": get_rrmse(target_curves.ravel(), pred_curves.ravel()),
+        "MAE": get_mae(target_curves.ravel(), pred_curves.ravel()),
+        "R2": get_r_squared(target_curves.ravel(), pred_curves.ravel()),
     }
     return char_metrics, gen_metrics
+
+
+def _predict_unified_characterisation_transformed(
+    model,
+    inputs_pca,
+    y_scaler,
+    device,
+):
+    """Return unified regressor predictions in transformed target space."""
+    model.eval()
+    with torch.no_grad():
+        inputs_tensor = torch.FloatTensor(inputs_pca).to(device)
+        predictions_scaled = model.regressor(inputs_tensor).cpu().numpy()
+    return scaled_to_transformed(predictions_scaled, y_scaler)
 
 
 def _initialise_parameter_history(param_names):
@@ -277,9 +310,10 @@ def _execute_unified_training(cfg, experiment, device):
        a. Preprocess the fold's data (augmentation, scaling, PCA).
        b. Instantiate the UnifiedModel and optimizer.
        c. Train the model on the training fold.
-       d. Evaluate on the test fold and record metrics.
-       e. Save the model checkpoint if it has the best characterization R2 so far.
-    3. Report and persist aggregate statistics across folds.
+       d. Select and restore the best validation epoch.
+       e. Evaluate complete validation and final test metrics.
+       f. Select the global checkpoint using validation only.
+    3. Report and persist aggregate test statistics across folds.
     """
     exp_dir = str(experiment.directory)
     print(f"Experiment directory: {exp_dir}")
@@ -287,6 +321,14 @@ def _execute_unified_training(cfg, experiment, device):
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
     train_cfg = cfg["training"]
+    training_control = resolve_training_control(
+        train_cfg,
+        "characterization.transformed.aggregate.R2",
+    )
+    training_control["selection_policy"]["metric_path"] = (
+        "characterization.transformed.aggregate."
+        + training_control["selection_policy"]["metric"]
+    )
     n_days = data_cfg["n_days"]
     n_params = data_cfg["n_params"]
     param_names = validate_parameter_names(
@@ -313,9 +355,27 @@ def _execute_unified_training(cfg, experiment, device):
     history_gen = create_metric_history()
     transformed_parameter_history = _initialise_parameter_history(param_names)
     physical_parameter_history = _initialise_parameter_history(param_names)
-    best_global_r2 = -np.inf
+    globally_selected_validation_score = None
 
     print(f"Starting Training Char + Gen with PCA ({n_pca} components)...")
+    print(
+        "Checkpoint selection: validation "
+        f"{training_control['selection_policy']['metric']} on the "
+        "characterisation branch in transformed aggregate target space "
+        f"({training_control['selection_policy']['mode']}); test data is "
+        "reserved for final estimation."
+    )
+    print(
+        "Early stopping: "
+        + (
+            "enabled "
+            f"(patience={training_control['early_stopping']['patience']}, "
+            f"min_delta={training_control['early_stopping']['min_delta']})"
+            if training_control["early_stopping"]["enabled"]
+            else "disabled; all maximum epochs will run"
+        )
+        + "."
+    )
 
     for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x_raw), 1):
         start_time = time.time()
@@ -329,6 +389,20 @@ def _execute_unified_training(cfg, experiment, device):
             "unified",
             fold_idx,
         )
+        training_local_indices, validation_local_indices = (
+            split_development_indices(
+                len(train_idx),
+                training_control["validation_fraction"],
+                training_seed_plan["validation_split"],
+                minimum_validation_samples=(
+                    2
+                    if training_control["selection_policy"]["metric"] == "R2"
+                    else 1
+                ),
+            )
+        )
+        training_global_indices = train_idx[training_local_indices]
+        validation_global_indices = train_idx[validation_local_indices]
         print(
             f"    [Fold {fold_idx}] Reproducibility seeds: "
             f"augmentation={preprocessing_seed_plan['augmentation']}, "
@@ -337,13 +411,18 @@ def _execute_unified_training(cfg, experiment, device):
             f"data_loader={training_seed_plan['data_loader']}"
         )
 
-        x_train_clean, x_test_clean = x_raw[train_idx], x_raw[test_idx]
-        y_train = y_transformed[train_idx]
+        x_train_clean = x_raw[training_global_indices]
+        x_validation_clean = x_raw[validation_global_indices]
+        x_test_clean = x_raw[test_idx]
+        y_train = y_transformed[training_global_indices]
+        y_validation = y_transformed[validation_global_indices]
         y_test = y_transformed[test_idx]
 
         (
             x_train_combined,
             y_train_combined,
+            x_validation_pca,
+            y_validation_scaled,
             x_test_pca,
             y_test_scaled,
             x_scaler,
@@ -351,8 +430,10 @@ def _execute_unified_training(cfg, experiment, device):
             pca,
         ) = _preprocess_fold(
             x_train_clean,
+            x_validation_clean,
             x_test_clean,
             y_train,
+            y_validation,
             y_test,
             n_pca,
             noise_std,
@@ -380,7 +461,25 @@ def _execute_unified_training(cfg, experiment, device):
             train_cfg,
         )
 
-        model.fit(
+        selection_tracker = build_validation_selection_tracker(
+            training_control
+        )
+
+        def validation_score_fn(current_model):
+            predictions = _predict_unified_characterisation_transformed(
+                current_model,
+                x_validation_pca,
+                y_scaler,
+                device,
+            )
+            return compute_selection_metric(
+                y_validation,
+                predictions,
+                training_control["selection_policy"]["metric"],
+                n_columns=n_params,
+            )
+
+        training_result = model.fit(
             train_loader,
             optimizer,
             criterion,
@@ -390,9 +489,34 @@ def _execute_unified_training(cfg, experiment, device):
             alpha_char=cfg["loss"]["alpha_char"],
             alpha_gen=cfg["loss"]["alpha_gen"],
             scheduler=scheduler,
+            validation_score_fn=validation_score_fn,
+            selection_tracker=selection_tracker,
         )
 
-        char_m, gen_m = _evaluate_fold(
+        validation_char_metrics, validation_gen_metrics = _evaluate_fold(
+            model,
+            x_validation_pca,
+            y_validation_scaled,
+            y_validation,
+            x_validation_clean,
+            y_scaler,
+            pca,
+            x_scaler,
+            n_params,
+            device,
+            cfg,
+        )
+        validation_metrics = {
+            "characterization": validation_char_metrics,
+            "generation": validation_gen_metrics,
+        }
+        selected_validation_score = assert_selected_validation_score(
+            training_result["selected_validation_score"],
+            validation_metrics,
+            training_control["selection_policy"]["metric_path"],
+        )
+
+        test_char_metrics, test_gen_metrics = _evaluate_fold(
             model,
             x_test_pca,
             y_test_scaled,
@@ -406,31 +530,49 @@ def _execute_unified_training(cfg, experiment, device):
             cfg,
         )
 
-        transformed_char_metrics = char_m["transformed"]["aggregate"]
+        transformed_char_metrics = test_char_metrics["transformed"][
+            "aggregate"
+        ]
 
         record_metric_values(history_char, transformed_char_metrics)
-        record_metric_values(history_gen, gen_m)
+        record_metric_values(history_gen, test_gen_metrics)
         _record_parameter_metrics(
             transformed_parameter_history,
-            char_m["transformed"]["per_parameter"],
+            test_char_metrics["transformed"]["per_parameter"],
         )
         _record_parameter_metrics(
             physical_parameter_history,
-            char_m["physical"]["per_parameter"],
+            test_char_metrics["physical"]["per_parameter"],
         )
 
         elapsed = time.time() - start_time
         print(
             f"Fold {fold_idx} | {elapsed:.0f}s |",
-            "Char R2 (transformed): "
+            f"selected validation "
+            f"{training_control['selection_policy']['metric']}: "
+            f"{selected_validation_score:.4f} | test Char R2 "
+            "(transformed): "
             f"{transformed_char_metrics['R2']:.4f} | "
-            f"Gen R2: {gen_m['R2']:.4f}",
+            f"test Gen R2: {test_gen_metrics['R2']:.4f}",
+        )
+        index_files = experiment.save_fold_indices(
+            fold_idx,
+            training_global_indices,
+            validation_global_indices,
+            test_idx,
+        )
+        trace_path = experiment.save_training_trace(
+            fold_idx,
+            training_result["trace"],
         )
         experiment.record_fold(
             fold_idx,
             {
-                "characterization": char_m,
-                "generation": gen_m,
+                "validation": validation_metrics,
+                "test": {
+                    "characterization": test_char_metrics,
+                    "generation": test_gen_metrics,
+                },
             },
             {
                 "k_fold": train_cfg["random_seed"],
@@ -438,25 +580,48 @@ def _execute_unified_training(cfg, experiment, device):
                 "training": training_seed_plan,
             },
             elapsed,
+            selection={
+                "fold_selected_epoch": training_result["selected_epoch"],
+                "fold_selected_validation_score": selected_validation_score,
+            },
+            training={
+                "maximum_epochs": train_cfg["epochs"],
+                "validation_fraction": training_control[
+                    "validation_fraction"
+                ],
+                "epochs_completed": training_result["epochs_completed"],
+                "stopped_early": training_result["stopped_early"],
+                "early_stopping": training_control["early_stopping"],
+            },
+            index_files=index_files,
+            training_trace=trace_path,
         )
 
-        if transformed_char_metrics["R2"] > best_global_r2:
-            best_global_r2 = transformed_char_metrics["R2"]
+        if is_strictly_better_score(
+            selected_validation_score,
+            globally_selected_validation_score,
+            training_control["selection_policy"]["mode"],
+        ):
+            globally_selected_validation_score = selected_validation_score
             save_model_checkpoint(
                 exp_dir, cfg["checkpoint"], model, x_scaler, y_scaler, pca
             )
             experiment.record_checkpoint(
                 fold_idx,
-                best_global_r2,
+                selected_validation_score,
                 checkpoint_artefact_paths(exp_dir, cfg["checkpoint"]),
+                selected_epoch=training_result["selected_epoch"],
             )
 
     print("\n" + "=" * 50)
-    print("FINAL PERFORMANCE REPORT")
+    print("FINAL TEST PERFORMANCE REPORT")
     print(f"PCA Components: {n_pca}")
     print("=" * 50)
-    print_metric_history("CHARACTERIZATION (transformed space)", history_char)
-    print_metric_history("GENERATION", history_gen)
+    print_metric_history(
+        "TEST CHARACTERIZATION (transformed space)",
+        history_char,
+    )
+    print_metric_history("TEST GENERATION", history_gen)
     _print_parameter_history(transformed_parameter_history, "transformed")
     _print_parameter_history(physical_parameter_history, "physical")
     print("=" * 50)
@@ -488,6 +653,14 @@ def run_unified_training(
 ):
     """Train the unified model and return its isolated experiment directory."""
     train_cfg = cfg["training"]
+    training_control = resolve_training_control(
+        train_cfg,
+        "characterization.transformed.aggregate.R2",
+    )
+    training_control["selection_policy"]["metric_path"] = (
+        "characterization.transformed.aggregate."
+        + training_control["selection_policy"]["metric"]
+    )
     device = select_training_device()
     experiment = ExperimentRun.start(
         stage="unified",
@@ -498,7 +671,7 @@ def run_unified_training(
         folds=range(1, train_cfg["n_splits"] + 1),
         base_seed=train_cfg["random_seed"],
         device=device,
-        checkpoint_metric="characterization.transformed.aggregate.R2",
+        checkpoint_selection_policy=training_control["selection_policy"],
     )
     try:
         _execute_unified_training(cfg, experiment, device)
