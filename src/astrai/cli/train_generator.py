@@ -44,12 +44,12 @@ from astrai.utils.training import (
     load_fold_arrays,
     load_outer_fold_indices,
     load_preprocessing_source_array,
-    partition_precomputed_development_data,
     print_metric_history,
     record_metric_values,
     resolve_test_fold,
     resolve_training_control,
     select_training_device,
+    split_development_indices,
     train_supervised_model,
 )
 from astrai.paths import resolve_config_path, resolve_user_path
@@ -59,27 +59,54 @@ def _load_fold_data(fold_dir):
     """Load preprocessed arrays for a single generator fold.
     Expects the following files in fold_dir:
     - x_train_clean_pca.npy
-    - x_train_aug_pca.npy
     - y_train_scaled.npy
     - y_test_scaled.npy
     - x_test_clean.npy
     Returns:
     - x_train_clean_pca: (n_train_clean, n_pca)
-    - x_train_aug_pca: (n_train_aug, n_pca)
-    - y_train_scaled: (n_train, n_curves)
-    - y_test_scaled: (n_test, n_curves)
-    - x_test_clean: (n_test, n_params)
+    - y_train_scaled: (n_train, n_params)
+    - y_test_scaled: (n_test, n_params)
+    - x_test_clean: (n_test, n_timepoints)
     """
     return load_fold_arrays(
         fold_dir,
         (
             "x_train_clean_pca.npy",
-            "x_train_aug_pca.npy",
             "y_train_scaled.npy",
             "y_test_scaled.npy",
             "x_test_clean.npy",
         ),
     )
+
+
+def _partition_generator_development_data(
+    clean_curve_targets,
+    parameter_inputs,
+    validation_fraction,
+    validation_seed,
+    minimum_validation_samples=1,
+):
+    """Create paired parameter-to-clean-curve training and validation data."""
+    sample_count = len(clean_curve_targets)
+    if len(parameter_inputs) != sample_count:
+        raise ValueError(
+            "Clean curve targets and parameter inputs must contain the same "
+            "development samples."
+        )
+
+    training_local, validation_local = split_development_indices(
+        sample_count,
+        validation_fraction,
+        validation_seed,
+        minimum_validation_samples,
+    )
+    return {
+        "training_inputs": parameter_inputs[training_local],
+        "training_targets": clean_curve_targets[training_local],
+        "validation_inputs": parameter_inputs[validation_local],
+        "training_local_indices": training_local,
+        "validation_local_indices": validation_local,
+    }
 
 
 def _predict_generator_curves(
@@ -232,7 +259,6 @@ def run_generator_training(
 
             (
                 x_train_clean_pca,
-                x_train_aug_pca,
                 y_train_scaled,
                 y_test_scaled,
                 x_test_clean,
@@ -256,9 +282,8 @@ def run_generator_training(
                 "generator",
                 fold_idx,
             )
-            partition = partition_precomputed_development_data(
+            partition = _partition_generator_development_data(
                 x_train_clean_pca,
-                x_train_aug_pca,
                 y_train_scaled,
                 training_control["validation_fraction"],
                 seed_plan["validation_split"],
@@ -284,8 +309,8 @@ def run_generator_training(
             )
 
             train_loader = build_training_loader(
-                partition["training_targets"],
                 partition["training_inputs"],
+                partition["training_targets"],
                 batch_size=training_cfg["batch_size"],
                 seed=seed_plan["data_loader"],
             )
@@ -304,7 +329,7 @@ def run_generator_training(
             def validation_score_fn(current_model):
                 predictions = _predict_generator_curves(
                     current_model,
-                    partition["validation_targets"],
+                    partition["validation_inputs"],
                     x_scaler,
                     pca,
                     device,
@@ -329,7 +354,7 @@ def run_generator_training(
 
             validation_metrics = _evaluate_generator(
                 model,
-                partition["validation_targets"],
+                partition["validation_inputs"],
                 validation_target_curves,
                 prep_dir,
                 device,

@@ -81,6 +81,10 @@ Single model with both branches trained jointly:
 astrai train --config configs/default.yaml
 ```
 
+The Characterizer is trained on clean and augmented curves paired with the
+same parameters. LCGen receives those duplicated parameters and is supervised
+against the corresponding clean PCA-compressed curve in both cases.
+
 ### Inference
 
 ```bash
@@ -391,7 +395,9 @@ in epoch or fold selection.
 
 ### Generator Training (`astrai train-generator`)
 
-Trains a `MLPWithResiduals` to reconstruct PCA-compressed curves from physical parameters.
+Trains a `MLPWithResiduals` to reconstruct clean PCA-compressed curves from
+scaled transformed physical parameters. Each training sample contributes one
+parameter-to-clean-curve pair.
 
 ```bash
 astrai train-generator \

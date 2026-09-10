@@ -35,7 +35,6 @@ class LegacyTrainingArrayTests(unittest.TestCase):
     def test_generator_loader_normalises_legacy_float64_arrays(self):
         names = (
             "x_train_clean_pca.npy",
-            "x_train_aug_pca.npy",
             "y_train_scaled.npy",
             "y_test_scaled.npy",
             "x_test_clean.npy",
