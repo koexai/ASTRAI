@@ -50,7 +50,8 @@ class UnifiedModel(nn.Module):
         Parameters
         ----------
         train_loader : DataLoader
-            Yields ``(batch_x, batch_y)`` pairs of (PCA curves, scaled params).
+            Yields ``(batch_x, batch_y, batch_clean_x)`` triples containing
+            PCA curve inputs, scaled parameters and clean PCA curve targets.
         optimizer : torch.optim.Optimizer
             Shared optimizer for both branches.
         criterion_char : callable
@@ -77,8 +78,15 @@ class UnifiedModel(nn.Module):
         for epoch in range(epochs):
             self.train()
             total_loss = 0
-            for batch_x, batch_y in train_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            for batch in train_loader:
+                if len(batch) != 3:
+                    raise ValueError(
+                        "Unified training batches must contain curve inputs, "
+                        "parameter targets and clean reconstruction targets."
+                    )
+                batch_x, batch_y, batch_clean_x = (
+                    values.to(device) for values in batch
+                )
                 optimizer.zero_grad()
 
                 # Characterization: curves -> params
@@ -87,7 +95,7 @@ class UnifiedModel(nn.Module):
 
                 # Generation: params -> curves (teacher forcing)
                 pred_curve = self.generator(batch_y)
-                loss_gen = criterion_gen(pred_curve, batch_x)
+                loss_gen = criterion_gen(pred_curve, batch_clean_x)
 
                 loss = alpha_char * loss_char + alpha_gen * loss_gen
 

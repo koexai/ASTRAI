@@ -128,6 +128,9 @@ def _preprocess_fold(
     y_train_combined : np.ndarray
         Scaled training parameters (duplicated for augmented data),
         shape (n_train_combined, n_params).
+    x_train_clean_targets : np.ndarray
+        PCA-transformed clean curve targets, duplicated to align with the
+        clean and augmented Characterizer inputs.
     x_validation_pca, y_validation_scaled : np.ndarray
         Model-ready validation inputs and parameters.
     x_test_pca : np.ndarray
@@ -176,10 +179,14 @@ def _preprocess_fold(
 
     x_train_combined = np.vstack([x_train_clean_pca, x_train_aug_pca])
     y_train_combined = np.vstack([y_train_scaled, y_train_scaled])
+    x_train_clean_targets = np.vstack(
+        [x_train_clean_pca, x_train_clean_pca]
+    )
 
     return (
         x_train_combined,
         y_train_combined,
+        x_train_clean_targets,
         x_validation_pca,
         y_validation_scaled,
         x_test_pca,
@@ -421,6 +428,7 @@ def _execute_unified_training(cfg, experiment, device):
         (
             x_train_combined,
             y_train_combined,
+            x_train_clean_targets,
             x_validation_pca,
             y_validation_scaled,
             x_test_pca,
@@ -452,6 +460,7 @@ def _execute_unified_training(cfg, experiment, device):
             y_train_combined,
             batch_size=train_cfg["batch_size"],
             seed=training_seed_plan["data_loader"],
+            reconstruction_targets=x_train_clean_targets,
         )
 
         model = build_unified_model(cfg).to(device)

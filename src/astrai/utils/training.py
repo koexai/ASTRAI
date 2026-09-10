@@ -348,12 +348,23 @@ def record_metric_values(history, metrics):
         values.append(metrics[metric_name])
 
 
-def build_training_loader(inputs, targets, batch_size, seed):
-    """Create the deterministic DataLoader shared by training stages."""
-    dataset = TensorDataset(
-        torch.FloatTensor(inputs),
-        torch.FloatTensor(targets),
-    )
+def build_training_loader(
+    inputs,
+    targets,
+    batch_size,
+    seed,
+    *,
+    reconstruction_targets=None,
+):
+    """Create the deterministic DataLoader shared by training stages.
+
+    Unified training supplies explicit clean reconstruction targets as a
+    third tensor. Split training retains the existing two-tensor batches.
+    """
+    tensors = [torch.FloatTensor(inputs), torch.FloatTensor(targets)]
+    if reconstruction_targets is not None:
+        tensors.append(torch.FloatTensor(reconstruction_targets))
+    dataset = TensorDataset(*tensors)
     return DataLoader(
         dataset,
         batch_size=batch_size,
