@@ -79,7 +79,7 @@ class TrainingInterfaceTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     module,
-                    "_load_fold_data",
+                    "load_training_source",
                     side_effect=failure,
                 ),
                 redirect_stdout(io.StringIO()),

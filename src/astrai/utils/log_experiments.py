@@ -32,7 +32,7 @@ from astrai.utils.target_transformations import (
 from astrai.paths import source_checkout_root, source_snapshot_root
 
 
-EXPERIMENT_METADATA_VERSION = 4
+EXPERIMENT_METADATA_VERSION = 5
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -472,6 +472,30 @@ class ExperimentRun:
             )
         os.replace(temporary, destination)
 
+    def save_preprocessing_source(self, curves, physical_parameters, data_id):
+        """Persist recoverable canonical data once for in-process preprocessing."""
+        for name, values in (("x_raw", curves), ("y_physical", physical_parameters)):
+            np.save(self.directory / f"{name}.npy", np.asarray(values, dtype=MODEL_ARRAY_DTYPE))
+        self.metadata["preprocessing"].update({
+            "dataset_id": data_id, "curves": "x_raw.npy",
+            "physical_parameters": "y_physical.npy",
+            "sample_identity": "canonical_row_index",
+            "fit_policy": "clean_original_samples", "protocol": "holdout_validation",
+        })
+        self._write_metadata()
+
+    def save_partition_plan(self, holdouts, selections):
+        """Record actual holdouts and optional future selection assignments."""
+        path = self.directory / "partitions.yaml"
+        path.write_text(yaml.safe_dump({
+            "protocol": "holdout_validation",
+            "holdout": [part.record() for part in holdouts],
+            "selection": {key: [part.record() for part in parts]
+                          for key, parts in selections.items()},
+        }, sort_keys=False), encoding="utf-8")
+        self.metadata["preprocessing"]["partition_plan"] = path.name
+        self._write_metadata()
+
     def save_fold_indices(
         self,
         fold,
@@ -522,6 +546,7 @@ class ExperimentRun:
         training=None,
         index_files=None,
         training_trace=None,
+        preprocessing=None,
     ):
         """Persist one completed outer fold and its selection evidence."""
         fold_key = f"fold_{int(fold)}"
@@ -536,6 +561,7 @@ class ExperimentRun:
             "training": _normalise_metadata(training),
             "metrics": _normalise_metadata(metrics),
             "training_trace": training_trace,
+            "preprocessing": _normalise_metadata(preprocessing),
         }
         self.metadata["results"]["folds"].append(fold_record)
         self._write_metadata()
@@ -565,6 +591,12 @@ class ExperimentRun:
             "outer_fold": int(fold),
             "epoch": None if selected_epoch is None else int(selected_epoch),
             "validation_score": float(score),
+            "role": "holdout_validation",
+            "preprocessing_bundle_id": next((
+                item.get("preprocessing", {}).get("bundle_id")
+                for item in self.metadata["results"]["folds"]
+                if item["outer_fold"] == int(fold) and item.get("preprocessing")
+            ), None),
             "files": checkpoint_files,
         }
         self._write_metadata()

@@ -780,6 +780,14 @@ def main(argv=None):
         char_y_scaler,
         gen_y_scaler,
     )
+    if getattr(char_y_scaler, "astrai_association", None):
+        from astrai.utils.preprocessing import load_training_source, load_training_fold
+        source = load_training_source(args.prep, char_cfg)
+        _, diagnostic_bundle = load_training_fold(args.prep, char_cfg, diagnostic_fold, source)
+        expected_id = diagnostic_bundle.manifest["bundle_id"]
+        for scaler in (char_y_scaler, gen_y_scaler):
+            if scaler.astrai_association["bundle_id"] != expected_id:
+                raise ValueError("Diagnostic fold and checkpoint preprocessing bundles differ")
     print("Validated shared PPReg/LCGen parameter scaling.")
 
     # Load test data from chosen fold

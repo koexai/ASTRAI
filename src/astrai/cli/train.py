@@ -22,9 +22,6 @@ import time
 
 import numpy as np
 import torch
-from sklearn.model_selection import KFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 
 from astrai.models.factories import build_unified_model
 from astrai.utils.metrics import (
@@ -66,8 +63,11 @@ from astrai.utils.training import (
     record_metric_values,
     resolve_training_control,
     select_training_device,
-    split_development_indices,
 )
+from astrai.utils.partitions import (
+    Partition, holdout_partition, outer_partitions, partition_seed, resolve_validation_fraction, selection_plan,
+)
+from astrai.utils.preprocessing import fit_preprocessing, dataset_identity, validate_pca_size
 from astrai.paths import resolve_config_path
 
 
@@ -90,6 +90,7 @@ def _preprocess_fold(
     fold_idx,
     augmentation_seed,
     pca_seed,
+    bundle=None,
 ):
     """Augment, scale, and PCA-transform a single fold's data.
     Parameters
@@ -153,29 +154,24 @@ def _preprocess_fold(
         rng=make_numpy_rng(augmentation_seed),
     )
 
-    x_scaler = StandardScaler()
-    x_scaler.fit(x_train_clean)
-    x_train_clean_scaled = x_scaler.transform(x_train_clean)
-    x_train_aug_scaled = x_scaler.transform(x_train_aug)
-    x_validation_scaled = x_scaler.transform(x_validation_clean)
-    x_test_scaled = x_scaler.transform(x_test_clean)
-
-    y_scaler = StandardScaler()
-    y_train_scaled = y_scaler.fit_transform(y_train)
-    y_validation_scaled = y_scaler.transform(y_validation)
-    y_test_scaled = y_scaler.transform(y_test)
-
-    pca = PCA(n_components=n_pca, random_state=pca_seed)
-    pca.fit(x_train_clean_scaled)
-    expl_var = pca.explained_variance_ratio_.sum()
-    print(
-        f"    [Fold {fold_idx}] PCA explained variance: {expl_var:.4f} ({expl_var*100:.2f}%)"
-    )
-
-    x_train_clean_pca = pca.transform(x_train_clean_scaled)
-    x_train_aug_pca = pca.transform(x_train_aug_scaled)
-    x_validation_pca = pca.transform(x_validation_scaled)
-    x_test_pca = pca.transform(x_test_scaled)
+    if bundle is None:
+        # Compatibility for direct callers: local row identity, same fit boundary.
+        curves = np.vstack([x_train_clean, x_validation_clean, x_test_clean])
+        parameters = np.vstack([y_train, y_validation, y_test])
+        n_train, n_val = len(x_train_clean), len(x_validation_clean)
+        local = Partition(len(curves), tuple(range(n_train + n_val)),
+                          tuple(range(n_train)), tuple(range(n_train, n_train + n_val)),
+                          tuple(range(n_train + n_val, len(curves))),
+                          outer_fold=fold_idx)
+        bundle = fit_preprocessing(curves, parameters, local, n_pca, pca_seed)
+    x_scaler, y_scaler, pca = bundle.x_scaler, bundle.y_scaler, bundle.pca
+    x_train_clean_pca = bundle.transform_curves(x_train_clean)
+    x_train_aug_pca = bundle.transform_curves(x_train_aug)
+    x_validation_pca = bundle.transform_curves(x_validation_clean)
+    x_test_pca = bundle.transform_curves(x_test_clean)
+    y_train_scaled = bundle.transform_parameters(y_train)
+    y_validation_scaled = bundle.transform_parameters(y_validation)
+    y_test_scaled = bundle.transform_parameters(y_test)
 
     x_train_combined = np.vstack([x_train_clean_pca, x_train_aug_pca])
     y_train_combined = np.vstack([y_train_scaled, y_train_scaled])
@@ -336,6 +332,7 @@ def _execute_unified_training(cfg, experiment, device):
         "characterization.transformed.aggregate."
         + training_control["selection_policy"]["metric"]
     )
+    training_control["validation_fraction"] = resolve_validation_fraction(cfg)
     n_days = data_cfg["n_days"]
     n_params = data_cfg["n_params"]
     param_names = validate_parameter_names(
@@ -352,11 +349,22 @@ def _execute_unified_training(cfg, experiment, device):
         raise ValueError("Unified training requires physical parameter labels")
     y_transformed = physical_to_transformed(y_physical, cfg)
 
-    kf = KFold(
-        n_splits=train_cfg["n_splits"],
-        shuffle=True,
-        random_state=train_cfg["random_seed"],
-    )
+    data_id = dataset_identity(x_raw, y_transformed)
+    experiment.save_preprocessing_source(x_raw, y_physical, data_id)
+    partitions = [holdout_partition(
+        len(x_raw), development, test, training_control["validation_fraction"],
+        partition_seed(train_cfg["random_seed"], fold), fold)
+        for fold, (development, test) in enumerate(outer_partitions(
+            len(x_raw), train_cfg["n_splits"], train_cfg["random_seed"]), 1)]
+    for partition in partitions:
+        validate_pca_size(n_pca, len(partition.training), n_days)
+
+    selections = selection_plan(partitions, cfg.get("partitioning", {}).get("selection_folds"),
+                                train_cfg["random_seed"])
+    for folds in selections.values():
+        for partition in folds:
+            validate_pca_size(n_pca, len(partition.training), n_days)
+    experiment.save_partition_plan(partitions, selections)
 
     history_char = create_metric_history()
     history_gen = create_metric_history()
@@ -384,7 +392,9 @@ def _execute_unified_training(cfg, experiment, device):
         + "."
     )
 
-    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x_raw), 1):
+    for sample_partition in partitions:
+        fold_idx = sample_partition.outer_fold
+        test_idx = sample_partition.indices("test")
         start_time = time.time()
 
         preprocessing_seed_plan = build_unified_preprocessing_seed_plan(
@@ -396,20 +406,11 @@ def _execute_unified_training(cfg, experiment, device):
             "unified",
             fold_idx,
         )
-        training_local_indices, validation_local_indices = (
-            split_development_indices(
-                len(train_idx),
-                training_control["validation_fraction"],
-                training_seed_plan["validation_split"],
-                minimum_validation_samples=(
-                    2
-                    if training_control["selection_policy"]["metric"] == "R2"
-                    else 1
-                ),
-            )
-        )
-        training_global_indices = train_idx[training_local_indices]
-        validation_global_indices = train_idx[validation_local_indices]
+        training_seed_plan["validation_split"] = partition_seed(train_cfg["random_seed"], fold_idx)
+        training_global_indices = sample_partition.indices("training")
+        validation_global_indices = sample_partition.indices("validation")
+        bundle = fit_preprocessing(x_raw, y_transformed, sample_partition, n_pca,
+                                   preprocessing_seed_plan["pca"], cfg, data_id=data_id)
         print(
             f"    [Fold {fold_idx}] Reproducibility seeds: "
             f"augmentation={preprocessing_seed_plan['augmentation']}, "
@@ -450,6 +451,7 @@ def _execute_unified_training(cfg, experiment, device):
             fold_idx,
             preprocessing_seed_plan["augmentation"],
             preprocessing_seed_plan["pca"],
+            bundle=bundle,
         )
 
         configure_torch_determinism(training_seed_plan["model"])
@@ -604,6 +606,7 @@ def _execute_unified_training(cfg, experiment, device):
             },
             index_files=index_files,
             training_trace=trace_path,
+            preprocessing=bundle.manifest,
         )
 
         if is_strictly_better_score(

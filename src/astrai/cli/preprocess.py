@@ -1,9 +1,8 @@
 """
 preprocess.py - Fit and persist shared preprocessing artifacts (scalers, PCA, augmented data).
 
-Fits PCA and StandardScalers once on the full dataset, then for each K-Fold
-split saves the pre-transformed arrays so that training scripts can load them
-directly without recomputing.
+Partitions original samples first, then fits clean-only scaler/PCA bundles on
+each effective training subset. Both model stages consume the same partitions.
 
 Usage::
 
@@ -12,6 +11,7 @@ Usage::
     astrai preprocess --config configs/default_split.yaml --out path/to/run
 """
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -19,12 +19,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-import joblib
 import numpy as np
 import yaml
-from sklearn.decomposition import PCA
-from sklearn.model_selection import KFold
-from sklearn.preprocessing import StandardScaler
 
 from astrai.utils.augmentation import apply_lsst_pipeline
 from astrai.utils.array_dtypes import (
@@ -37,7 +33,7 @@ from astrai.utils.configuration import load_config
 from astrai.utils.data import load_raw_data
 from astrai.utils.log_experiments import save_code
 from astrai.utils.reproducibility import (
-    build_preprocessing_seed_plan,
+    build_pool_preprocessing_seed_plan,
     make_numpy_rng,
 )
 from astrai.utils.runtime_environment import capture_runtime_environment
@@ -45,6 +41,13 @@ from astrai.utils.target_transformations import (
     PREPROCESSING_ARTEFACT_SCHEMA_VERSION,
     physical_to_transformed,
     target_transform_contract,
+)
+from astrai.utils.partitions import (
+    holdout_partition, outer_partitions, partition_seed,
+    resolve_validation_fraction, selection_plan,
+)
+from astrai.utils.preprocessing import (
+    dataset_identity, fit_preprocessing, validate_pca_size,
 )
 from astrai.paths import (
     resolve_config_path,
@@ -169,6 +172,7 @@ def _array_artefact_metadata(run_dir):
     for path in sorted(run_dir.rglob("*.npy")):
         array = np.load(path, mmap_mode="r", allow_pickle=False)
         artefacts[path.relative_to(run_dir).as_posix()] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "dtype": array.dtype.name,
             "shape": [int(size) for size in array.shape],
         }
@@ -201,7 +205,7 @@ def _initial_metadata(cfg, started_at, repository_root):
     """Build the initial metadata record for a preprocessing run."""
     preprocessing_cfg = cfg["preprocessing"]
     n_splits = preprocessing_cfg["n_splits"]
-    seed_plan = build_preprocessing_seed_plan(
+    seed_plan = build_pool_preprocessing_seed_plan(
         preprocessing_cfg["random_seed"],
         n_splits,
     )
@@ -232,202 +236,99 @@ def _initial_metadata(cfg, started_at, repository_root):
     }
 
 
-def _fit_global_artifacts(
-    x_raw,
-    y_transformed,
-    n_pca,
-    out_dir,
-    random_state,
-):
-    """Fit scalers and PCA on full dataset and save to out_dir.
-
-    Parameters
-    ----------
-    x_raw : np.ndarray
-        Raw input curves, shape (n_samples, n_days).
-    y_transformed : np.ndarray
-        Parameters in canonical model target space.
-    n_pca : int
-        Number of PCA components to keep.
-    out_dir : str
-        Output directory to save fitted artifacts.
-    random_state : int
-        Explicit PCA seed.
-    """
-    print("Fitting scalers and PCA on full dataset...")
-    x_scaler = StandardScaler()
-    x_scaler.fit(x_raw)
-
-    y_scaler = StandardScaler()
-    y_scaler.fit(y_transformed)
-
-    pca = PCA(n_components=n_pca, random_state=random_state)
-    pca.fit(x_scaler.transform(x_raw))
-    explained_var = pca.explained_variance_ratio_.sum()
-    print(
-        f"PCA explained variance: {explained_var:.4f} ({explained_var*100:.2f}%)"
-    )
-
-    joblib.dump(x_scaler, os.path.join(out_dir, "x_scaler.pkl"))
-    joblib.dump(y_scaler, os.path.join(out_dir, "y_scaler.pkl"))
-    joblib.dump(pca, os.path.join(out_dir, "pca.pkl"))
-
-    return x_scaler, y_scaler, pca
-
-
-def _process_fold(
-    fold_idx,
-    x_raw,
-    y_physical,
-    y_transformed,
-    train_idx,
-    test_idx,
-    x_scaler,
-    y_scaler,
-    pca,
-    n_days,
-    noise_std,
-    samples_per_day,
-    out_dir,
-    augmentation_seed,
-):
-    """Augment, transform, and save a single fold's data.
-
-    Parameters
-    ----------
-    fold_idx : int
-        Index of the current fold (1-based).
-        x_raw : np.ndarray
-        Raw input curves, shape (n_samples, n_days).
-        y_physical : np.ndarray
-        Parameters in physical space, shape (n_samples, n_params).
-        y_transformed : np.ndarray
-        Parameters in canonical model target space.
-        train_idx : np.ndarray
-        Indices for training samples in this fold.
-        test_idx : np.ndarray
-        Indices for test samples in this fold.
-        x_scaler : StandardScaler
-        Fitted scaler for input curves.
-        y_scaler : StandardScaler
-        Fitted scaler for parameters.
-        pca : PCA
-        Fitted PCA for input curves.
-        n_days : int
-        Number of days in the input curves.
-        noise_std : float
-        Standard deviation of Gaussian noise for augmentation.
-        samples_per_day : int
-        Number of augmented samples to generate per day.
-        out_dir : str
-        Base output directory for this fold's artifacts.
-    augmentation_seed : int
-        Seed for this fold's independent augmentation stream.
-    """
-    fold_dir = os.path.join(out_dir, f"fold_{fold_idx}")
-    os.makedirs(fold_dir, exist_ok=True)
-
-    x_train_clean = x_raw[train_idx]
-    x_test_clean = x_raw[test_idx]
-    y_train_transformed = y_transformed[train_idx]
-    y_test_transformed = y_transformed[test_idx]
-    y_test_physical = y_physical[test_idx]
-
-    _save_index_array(os.path.join(fold_dir, "train_idx.npy"), train_idx)
-    _save_index_array(os.path.join(fold_dir, "test_idx.npy"), test_idx)
-
-    print("  Applying LSST augmentation...")
-    x_train_aug, _ = apply_lsst_pipeline(
-        x_train_clean,
-        n_days,
-        noise_std,
-        samples_per_day=samples_per_day,
+def _process_fold(fold_idx, x_raw, y_physical, y_transformed, partition,
+                  bundle, n_days, noise_std, samples_per_day, out_dir,
+                  augmentation_seed):
+    """Materialise clean/augmented training and clean validation/test views."""
+    fold_dir = Path(out_dir) / f"fold_{fold_idx}"
+    bundle.save(fold_dir)
+    for name, indices in (("train_idx", partition.pool),
+                          ("training_idx", partition.training),
+                          ("validation_idx", partition.validation),
+                          ("test_idx", partition.test)):
+        _save_index_array(fold_dir / f"{name}.npy", np.asarray(indices, dtype=np.int64))
+    train = partition.indices("training")
+    validation = partition.indices("validation")
+    test = partition.indices("test")
+    augmented, _ = apply_lsst_pipeline(
+        x_raw[train], n_days, noise_std, samples_per_day=samples_per_day,
         rng=make_numpy_rng(augmentation_seed),
     )
-
-    x_train_clean_pca = pca.transform(x_scaler.transform(x_train_clean))
-    x_train_aug_pca = pca.transform(x_scaler.transform(x_train_aug))
-    x_test_pca = pca.transform(x_scaler.transform(x_test_clean))
-
-    y_train_scaled = y_scaler.transform(y_train_transformed)
-    y_test_scaled = y_scaler.transform(y_test_transformed)
-
-    model_arrays = {
-        "x_train_clean_pca.npy": x_train_clean_pca,
-        "x_train_aug_pca.npy": x_train_aug_pca,
-        "x_test_pca.npy": x_test_pca,
-        "y_train_scaled.npy": y_train_scaled,
-        "y_test_scaled.npy": y_test_scaled,
-        "y_test_transformed.npy": y_test_transformed,
-        "y_test_physical.npy": y_test_physical,
-        "x_test_clean.npy": x_test_clean,
+    arrays = {
+        "x_train_clean_pca.npy": bundle.transform_curves(x_raw[train]),
+        "x_train_aug_pca.npy": bundle.transform_curves(augmented),
+        "y_train_scaled.npy": bundle.transform_parameters(y_transformed[train]),
+        "x_validation_pca.npy": bundle.transform_curves(x_raw[validation]),
+        "y_validation_scaled.npy": bundle.transform_parameters(y_transformed[validation]),
+        "x_test_pca.npy": bundle.transform_curves(x_raw[test]),
+        "y_test_scaled.npy": bundle.transform_parameters(y_transformed[test]),
+        "y_test_transformed.npy": y_transformed[test],
+        "y_test_physical.npy": y_physical[test],
+        "x_test_clean.npy": x_raw[test],
     }
-    for filename, values in model_arrays.items():
-        _save_model_array(os.path.join(fold_dir, filename), values)
-
-    print(f"  Saved to {fold_dir}")
+    for filename, values in arrays.items():
+        _save_model_array(fold_dir / filename, values)
+    return {"bundle": f"fold_{fold_idx}/bundle.yaml",
+            "bundle_id": bundle.manifest["bundle_id"]}
 
 
 def _generate_preprocessing_artefacts(cfg, out_dir):
-    """Generate the numerical artefacts inside an existing run directory."""
+    """Build shared partitions before any learned preprocessing is fitted."""
     n_days = cfg["data"]["n_days"]
-    samples_per_day = cfg["data"].get("samples_per_day", 4)
-    noise_std = cfg["augmentation"]["noise_std"]
     n_pca = cfg["preprocessing"]["pca_components"]
     n_splits = cfg["preprocessing"]["n_splits"]
-    seed_plan = build_preprocessing_seed_plan(
-        cfg["preprocessing"]["random_seed"],
-        n_splits,
-    )
-
-    print("Loading data...")
+    base_seed = cfg["preprocessing"]["random_seed"]
+    seed_plan = build_pool_preprocessing_seed_plan(base_seed, n_splits)
+    fraction = resolve_validation_fraction(cfg)
     x_raw, y_physical = load_raw_data(None, cfg)
     if y_physical is None:
         raise ValueError("Preprocessing requires physical parameter labels")
-    y_transformed = physical_to_transformed(y_physical, cfg)
-
-    x_scaler, y_scaler, pca = _fit_global_artifacts(
-        x_raw,
-        y_transformed,
-        n_pca,
-        out_dir,
-        random_state=seed_plan["pca"],
-    )
-
-    _save_model_array(os.path.join(out_dir, "x_raw.npy"), x_raw)
-    _save_model_array(
-        os.path.join(out_dir, "y_physical.npy"),
-        y_physical,
-    )
-    _save_model_array(
-        os.path.join(out_dir, "y_transformed.npy"),
-        y_transformed,
-    )
-
-    kf = KFold(
-        n_splits=n_splits,
-        shuffle=True,
-        random_state=seed_plan["k_fold"],
-    )
-
-    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x_raw), 1):
-        print(f"\n--- Fold {fold_idx}/{n_splits} ---")
-        _process_fold(
-            fold_idx,
-            x_raw,
-            y_physical,
-            y_transformed,
-            train_idx,
-            test_idx,
-            x_scaler,
-            y_scaler,
-            pca,
-            n_days,
-            noise_std,
-            samples_per_day,
-            out_dir,
-            seed_plan["augmentation"][f"fold_{fold_idx}"],
-        )
+    x_raw, y_physical = as_model_array(x_raw), as_model_array(y_physical)
+    y_transformed = as_model_array(physical_to_transformed(y_physical, cfg))
+    data_id = dataset_identity(x_raw, y_transformed)
+    partitions = [holdout_partition(len(x_raw), development, test, fraction,
+                                   partition_seed(base_seed, fold), fold)
+                  for fold, (development, test) in enumerate(
+                      outer_partitions(len(x_raw), n_splits, base_seed), 1)]
+    for partition in partitions:
+        validate_pca_size(n_pca, len(partition.training), n_days)
+    # Optional future selection topology: indices only, never nested training.
+    k_select = cfg.get("partitioning", {}).get("selection_folds")
+    selections = selection_plan(partitions, k_select, base_seed)
+    for folds in selections.values():
+        for partition in folds:
+            validate_pca_size(n_pca, len(partition.training), n_days)
+    for name, values in (("x_raw", x_raw), ("y_physical", y_physical),
+                         ("y_transformed", y_transformed)):
+        _save_model_array(Path(out_dir) / f"{name}.npy", values)
+    plan = {"schema_version": 1, "dataset_id": data_id,
+            "protocol": "holdout_validation", "validation_fraction": fraction,
+            "outer_folds": n_splits, "base_seed": base_seed,
+            "selection_folds": k_select,
+            "holdout": [p.record() for p in partitions],
+            "selection": {key: [p.record() for p in folds]
+                          for key, folds in selections.items()}}
+    (Path(out_dir) / "partitions.yaml").write_text(
+        yaml.safe_dump(plan, sort_keys=False), encoding="utf-8")
+    bundles = {}
+    for partition in partitions:
+        fold = partition.outer_fold
+        bundle = fit_preprocessing(
+            x_raw, y_transformed, partition, n_pca,
+            seed_plan["pca"][f"fold_{fold}"],
+            cfg, data_id=data_id)
+        bundles[f"fold_{fold}"] = _process_fold(
+            fold, x_raw, y_physical, y_transformed, partition, bundle,
+            n_days, cfg["augmentation"]["noise_std"],
+            cfg["data"].get("samples_per_day", 4), out_dir,
+            seed_plan["augmentation"][f"fold_{fold}"])
+    return {"dataset": {"id": data_id, "sample_identity": "canonical_row_index",
+                        "curves": "x_raw.npy", "physical_parameters": "y_physical.npy",
+                        "transformed_parameters": "y_transformed.npy"},
+            "partition_plan": "partitions.yaml", "bundles": bundles,
+            "view_configuration": {"noise_std": cfg["augmentation"]["noise_std"],
+                                   "samples_per_day": cfg["data"].get("samples_per_day", 4)},
+            "fit_policy": "clean_original_samples", "protocol": "holdout_validation"}
 
 
 def run_preprocessing(cfg, out_dir=None, config_path=None):
@@ -460,7 +361,9 @@ def run_preprocessing(cfg, out_dir=None, config_path=None):
     try:
         _save_config_snapshot(run_dir, cfg, config_path=config_path)
         save_code(run_dir, folder=_REPOSITORY_ROOT)
-        _generate_preprocessing_artefacts(cfg, run_dir)
+        generated = _generate_preprocessing_artefacts(cfg, run_dir)
+        if isinstance(generated, dict):
+            metadata.update(generated)
         array_artefacts = _array_artefact_metadata(run_dir)
     except BaseException as exc:
         metadata["run"].update(

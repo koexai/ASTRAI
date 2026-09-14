@@ -10,7 +10,6 @@ import random
 from numbers import Integral
 
 import numpy as np
-import torch
 
 
 SEED_SCHEME_VERSION = 1
@@ -156,6 +155,8 @@ def derive_diagnostic_seed(base_seed, sample_index):
 
 def configure_torch_determinism(seed):
     """Seed training libraries and request deterministic PyTorch algorithms."""
+    import torch
+
     seed = validate_seed(seed, "PyTorch seed")
 
     # Required by deterministic CUDA matrix multiplication on supported CUDA
@@ -176,6 +177,8 @@ def configure_torch_determinism(seed):
 
 def make_torch_generator(seed):
     """Create an explicitly seeded CPU generator for a DataLoader."""
+    import torch
+
     generator = torch.Generator(device="cpu")
     generator.manual_seed(validate_seed(seed, "DataLoader seed"))
     return generator
@@ -183,6 +186,35 @@ def make_torch_generator(seed):
 
 def seed_data_loader_worker(_worker_id):
     """Seed Python and NumPy from the worker seed assigned by PyTorch."""
+    import torch
+
     worker_seed = torch.initial_seed() % (2**32)
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+
+def build_role_preprocessing_seed_plan(base_seed, role, outer_fold=None, selection_fold=None):
+    """Independent future selection/refit streams without changing old seeds."""
+    roles = {"inner_selection": 1, "outer_refit": 2,
+             "final_selection": 3, "final_refit": 4}
+    if role not in roles:
+        raise ValueError("Expected a selection or refit role")
+    components = (8, roles[role], outer_fold or 0, selection_fold or 0)
+    return {"pca": derive_seed(base_seed, *components, _PCA_NAMESPACE),
+            "augmentation": derive_seed(base_seed, *components, _AUGMENTATION_NAMESPACE)}
+
+
+def build_partition_seed(base_seed, outer_fold=None):
+    """Stage-independent partition stream; zero denotes final selection."""
+    return derive_seed(base_seed, 7, outer_fold or 0)
+
+
+def build_pool_preprocessing_seed_plan(base_seed, n_splits):
+    """Record only the effective per-pool PCA, augmentation and split seeds."""
+    plan = build_preprocessing_seed_plan(base_seed, n_splits)
+    plan["scheme_version"] = 2
+    plan["pca"] = {f"fold_{fold}": build_unified_preprocessing_seed_plan(base_seed, fold)["pca"]
+                   for fold in range(1, n_splits + 1)}
+    plan["validation_split"] = {f"fold_{fold}": build_partition_seed(base_seed, fold)
+                                for fold in range(1, n_splits + 1)}
+    return plan

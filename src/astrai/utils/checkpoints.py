@@ -5,6 +5,8 @@ associated scalers and PCA, as well as saving checkpoints after training.
 """
 
 import os
+import hashlib
+import yaml
 import shutil
 from pathlib import Path
 import joblib
@@ -70,6 +72,32 @@ def _load_scalers_and_pca(ckpt, exp_dir=None):
         _checkpoint_path(exp_dir, ckpt["y_scaler"])
     )
     pca = joblib.load(_checkpoint_path(exp_dir, ckpt["pca"]))
+    objects = {"x_scaler": x_scaler, "y_scaler": y_scaler, "pca": pca}
+    associations = [getattr(obj, "astrai_association", {}) for obj in objects.values()]
+    if any(associations) and len({item.get("bundle_id") for item in associations}) != 1:
+        raise ValueError("Checkpoint preprocessing objects belong to different bundles")
+    if exp_dir is not None:
+        metadata_path = Path(exp_dir) / "metadata.yaml"
+        if metadata_path.is_file():
+            metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8")) or {}
+            if metadata.get("experiment_metadata_version", 0) >= 5:
+                from astrai.utils.preprocessing import _learned_state_digest
+                selected = metadata.get("checkpoint", {}).get("selected_checkpoint") or {}
+                bundle_id = selected.get("preprocessing_bundle_id")
+                manifests = [item.get("preprocessing") for item in metadata.get("results", {}).get("folds", [])
+                             if item.get("outer_fold") == selected.get("outer_fold")]
+                manifest = next((item for item in manifests if item), {})
+                if not bundle_id or manifest.get("bundle_id") != bundle_id:
+                    raise ValueError("Checkpoint has no verifiable preprocessing association")
+                for name, obj in objects.items():
+                    if (getattr(obj, "astrai_association", {}).get("bundle_id") != bundle_id
+                            or _learned_state_digest(obj) != manifest.get("learned_state", {}).get(name)):
+                        raise ValueError(f"Checkpoint preprocessing mismatch: {name}")
+                for name in ("model", "x_scaler", "y_scaler", "pca"):
+                    path = _checkpoint_path(exp_dir, ckpt[name])
+                    record = selected.get("files", {}).get(name, {})
+                    if record.get("path") != path.name or record.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+                        raise ValueError(f"Checkpoint file differs from its recorded bundle: {name}")
     return x_scaler, y_scaler, pca
 
 
@@ -226,7 +254,7 @@ def save_model_checkpoint(
 
 
 def save_split_checkpoint(exp_dir, cfg_checkpoint, model, prep_dir):
-    """Save one split model and copy its shared preprocessing artefacts."""
+    """Save one split model with its actual fold-specific preprocessing."""
     torch.save(
         model.state_dict(),
         experiment_artefact_path(exp_dir, cfg_checkpoint["model"]),

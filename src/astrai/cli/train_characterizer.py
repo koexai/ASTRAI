@@ -42,9 +42,7 @@ from astrai.utils.training import (
     create_metric_history,
     is_strictly_better_score,
     load_fold_arrays,
-    load_outer_fold_indices,
-    load_preprocessing_source_array,
-    partition_precomputed_development_data,
+    combine_clean_and_augmented,
     print_metric_history,
     record_metric_values,
     resolve_test_fold,
@@ -57,6 +55,8 @@ from astrai.utils.target_transformations import (
     load_fold_target_array,
     scaled_to_transformed,
 )
+from astrai.utils.preprocessing import load_training_source, load_training_fold
+from astrai.utils.partitions import resolve_validation_fraction, partition_seed
 from astrai.paths import resolve_config_path, resolve_user_path
 
 
@@ -246,6 +246,7 @@ def run_characterizer_training(
         + training_control["selection_policy"]["metric"]
     )
 
+    training_control["validation_fraction"] = resolve_validation_fraction(cfg)
     test_fold = resolve_test_fold(training_cfg)
     fold_indices = resolve_fold_indices(test_fold, n_splits)
     prep_dir = resolve_user_path(prep_dir)
@@ -272,7 +273,6 @@ def run_characterizer_training(
     transformed_parameter_history = _initialise_parameter_history(param_names)
     physical_parameter_history = _initialise_parameter_history(param_names)
     globally_selected_validation_score = None
-    y_transformed = None
     y_scaler = None
 
     try:
@@ -304,56 +304,27 @@ def run_characterizer_training(
         else:
             print(f"Training split with test fold {test_fold}.")
 
+        source = load_training_source(prep_dir, cfg)
         for fold_idx in fold_indices:
             start_time = time.time()
             fold_dir = prep_dir / f"fold_{fold_idx}"
 
-            (
-                x_train_clean_pca,
-                x_train_aug_pca,
-                x_test_pca,
-                y_train_scaled,
-                y_test_transformed,
-            ) = _load_fold_data(fold_dir)
-            if y_transformed is None:
-                y_transformed = load_preprocessing_source_array(
-                    prep_dir,
-                    "y_transformed.npy",
-                )
-                y_scaler = joblib.load(prep_dir / "y_scaler.pkl")
-            development_global_indices, test_global_indices = (
-                load_outer_fold_indices(fold_dir)
-            )
-            print(
-                f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
-            )
-
-            seed_plan = build_training_seed_plan(
-                base_seed,
-                "characterizer",
-                fold_idx,
-            )
-            partition = partition_precomputed_development_data(
-                x_train_clean_pca,
-                x_train_aug_pca,
-                y_train_scaled,
-                training_control["validation_fraction"],
-                seed_plan["validation_split"],
-                minimum_validation_samples=(
-                    2
-                    if training_control["selection_policy"]["metric"] == "R2"
-                    else 1
-                ),
-            )
-            training_global_indices = development_global_indices[
-                partition["training_local_indices"]
-            ]
-            validation_global_indices = development_global_indices[
-                partition["validation_local_indices"]
-            ]
-            validation_targets_transformed = y_transformed[
-                validation_global_indices
-            ]
+            sample_partition, bundle = load_training_fold(prep_dir, cfg, fold_idx, source)
+            (x_train_clean_pca, x_train_aug_pca, x_test_pca,
+             y_train_scaled, y_test_transformed) = _load_fold_data(fold_dir)
+            training_global_indices = sample_partition.indices("training")
+            validation_global_indices = sample_partition.indices("validation")
+            test_global_indices = sample_partition.indices("test")
+            seed_plan = build_training_seed_plan(base_seed, "characterizer", fold_idx)
+            seed_plan["validation_split"] = partition_seed(base_seed, fold_idx)
+            validation_inputs, = load_fold_arrays(fold_dir, ("x_validation_pca.npy",))
+            y_scaler = bundle.y_scaler
+            validation_targets_transformed = source["parameters"][validation_global_indices]
+            training_inputs, training_targets = combine_clean_and_augmented(
+                x_train_clean_pca, x_train_aug_pca, y_train_scaled)
+            partition = {"training_inputs": training_inputs,
+                         "training_targets": training_targets,
+                         "validation_inputs": validation_inputs}
             configure_torch_determinism(seed_plan["model"])
             experiment.record_execution_environment(device=device)
             print(
@@ -495,6 +466,7 @@ def run_characterizer_training(
                 },
                 index_files=index_files,
                 training_trace=trace_path,
+                preprocessing=bundle.manifest,
             )
 
             if is_strictly_better_score(
@@ -507,7 +479,7 @@ def run_characterizer_training(
                     exp_dir,
                     char_cfg["checkpoint"],
                     model,
-                    prep_dir,
+                    fold_dir,
                 )
                 experiment.record_checkpoint(
                     fold_idx,

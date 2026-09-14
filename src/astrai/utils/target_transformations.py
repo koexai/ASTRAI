@@ -9,7 +9,7 @@ import yaml
 
 TARGET_TRANSFORM_NAME = "log1p"
 TARGET_TRANSFORM_VERSION = 1
-PREPROCESSING_ARTEFACT_SCHEMA_VERSION = 5
+PREPROCESSING_ARTEFACT_SCHEMA_VERSION = 6
 
 
 def target_transform_contract(cfg=None):
@@ -110,6 +110,14 @@ def validate_parameter_scalers(left, right, *, context="parameter scaling"):
     if type(left) is not type(right):
         raise ValueError(f"Incompatible {context}: scaler types differ")
 
+    left_association = getattr(left, "astrai_association", {})
+    right_association = getattr(right, "astrai_association", {})
+    if bool(left_association) != bool(right_association):
+        raise ValueError(f"Incompatible {context}: mixed historical and pool-specific scalers")
+    for key in ("target_transform", "param_names", "parameter_units", "unit_convention"):
+        if left_association.get(key) != right_association.get(key):
+            raise ValueError(f"Incompatible {context}: {key} differs")
+
     for attribute in ("mean_", "scale_"):
         if not hasattr(left, attribute) or not hasattr(right, attribute):
             raise ValueError(
@@ -168,7 +176,7 @@ def validate_preprocessing_target_contract(preprocessing_dir, cfg):
             f"found status {status!r} in {metadata_path}"
         )
     schema = metadata.get("preprocessing_artefact_schema_version")
-    if schema != PREPROCESSING_ARTEFACT_SCHEMA_VERSION:
+    if schema not in (5, PREPROCESSING_ARTEFACT_SCHEMA_VERSION):
         raise ValueError(
             "Preprocessing target representation is not compatible with "
             f"schema {PREPROCESSING_ARTEFACT_SCHEMA_VERSION}; found schema "

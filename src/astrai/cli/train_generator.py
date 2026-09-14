@@ -42,8 +42,6 @@ from astrai.utils.training import (
     create_metric_history,
     is_strictly_better_score,
     load_fold_arrays,
-    load_outer_fold_indices,
-    load_preprocessing_source_array,
     print_metric_history,
     record_metric_values,
     resolve_test_fold,
@@ -52,6 +50,8 @@ from astrai.utils.training import (
     split_development_indices,
     train_supervised_model,
 )
+from astrai.utils.preprocessing import load_training_source, load_training_fold
+from astrai.utils.partitions import resolve_validation_fraction, partition_seed
 from astrai.paths import resolve_config_path, resolve_user_path
 
 
@@ -196,6 +196,7 @@ def run_generator_training(
         "selection_policy"
     ]["metric"]
 
+    training_control["validation_fraction"] = resolve_validation_fraction(cfg)
     test_fold = resolve_test_fold(training_cfg)
     fold_indices = resolve_fold_indices(test_fold, n_splits)
     prep_dir = resolve_user_path(prep_dir)
@@ -220,7 +221,6 @@ def run_generator_training(
 
     history = create_metric_history()
     globally_selected_validation_score = None
-    x_raw = None
     x_scaler = None
     pca = None
 
@@ -253,6 +253,7 @@ def run_generator_training(
         else:
             print(f"Training split with test fold {test_fold}.")
 
+        source = load_training_source(prep_dir, cfg)
         for fold_idx in fold_indices:
             start_time = time.time()
             fold_dir = prep_dir / f"fold_{fold_idx}"
@@ -263,43 +264,18 @@ def run_generator_training(
                 y_test_scaled,
                 x_test_clean,
             ) = _load_fold_data(fold_dir)
-            if x_raw is None:
-                x_raw = load_preprocessing_source_array(
-                    prep_dir,
-                    "x_raw.npy",
-                )
-                x_scaler = joblib.load(prep_dir / "x_scaler.pkl")
-                pca = joblib.load(prep_dir / "pca.pkl")
-            development_global_indices, test_global_indices = (
-                load_outer_fold_indices(fold_dir)
-            )
-            print(
-                f"    [Fold {fold_idx}] Loaded preprocessing from {fold_dir}"
-            )
-
-            seed_plan = build_training_seed_plan(
-                base_seed,
-                "generator",
-                fold_idx,
-            )
-            partition = _partition_generator_development_data(
-                x_train_clean_pca,
-                y_train_scaled,
-                training_control["validation_fraction"],
-                seed_plan["validation_split"],
-                minimum_validation_samples=(
-                    2
-                    if training_control["selection_policy"]["metric"] == "R2"
-                    else 1
-                ),
-            )
-            training_global_indices = development_global_indices[
-                partition["training_local_indices"]
-            ]
-            validation_global_indices = development_global_indices[
-                partition["validation_local_indices"]
-            ]
-            validation_target_curves = x_raw[validation_global_indices]
+            sample_partition, bundle = load_training_fold(prep_dir, cfg, fold_idx, source)
+            training_global_indices = sample_partition.indices("training")
+            validation_global_indices = sample_partition.indices("validation")
+            test_global_indices = sample_partition.indices("test")
+            seed_plan = build_training_seed_plan(base_seed, "generator", fold_idx)
+            seed_plan["validation_split"] = partition_seed(base_seed, fold_idx)
+            validation_inputs, = load_fold_arrays(fold_dir, ("y_validation_scaled.npy",))
+            x_scaler, pca = bundle.x_scaler, bundle.pca
+            validation_target_curves = source["curves"][validation_global_indices]
+            partition = {"training_inputs": y_train_scaled,
+                         "training_targets": x_train_clean_pca,
+                         "validation_inputs": validation_inputs}
             configure_torch_determinism(seed_plan["model"])
             experiment.record_execution_environment(device=device)
             print(
@@ -421,6 +397,7 @@ def run_generator_training(
                 },
                 index_files=index_files,
                 training_trace=trace_path,
+                preprocessing=bundle.manifest,
             )
 
             if is_strictly_better_score(
@@ -433,7 +410,7 @@ def run_generator_training(
                     exp_dir,
                     gen_cfg["checkpoint"],
                     model,
-                    prep_dir,
+                    fold_dir,
                 )
                 experiment.record_checkpoint(
                     fold_idx,

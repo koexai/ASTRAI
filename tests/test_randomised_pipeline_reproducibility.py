@@ -106,7 +106,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
                 "samples_per_day": 1,
             },
             "preprocessing": {
-                "pca_components": 3,
+                "pca_components": 2,
                 "n_splits": 2,
                 "random_seed": 42,
             },
@@ -164,11 +164,11 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 first_metadata["preprocessing_artefact_schema_version"],
-                5,
+                6,
             )
             self.assertEqual(
-                load(first_dir / "pca.pkl").random_state,
-                first_metadata["preprocessing"]["seed_plan"]["pca"],
+                load(first_dir / "fold_1" / "pca.pkl").random_state,
+                yaml.safe_load((first_dir / "fold_1" / "bundle.yaml").read_text())["pca_seed"],
             )
 
 
