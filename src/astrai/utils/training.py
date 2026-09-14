@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 
 from astrai.utils.array_dtypes import load_index_array, load_model_array
+from astrai.utils.partitions import split_development_indices
 from astrai.utils.metrics import METRIC_NAMES, get_metric_function
 from astrai.utils.reproducibility import (
     make_torch_generator,
@@ -166,33 +167,6 @@ def resolve_training_control(training_cfg, metric_path):
             "min_delta": float(min_delta),
         },
     }
-
-
-def split_development_indices(
-    n_samples,
-    validation_fraction,
-    seed,
-    minimum_validation_samples=1,
-):
-    """Split one outer-fold development pool into train and validation rows."""
-    if isinstance(n_samples, bool) or not isinstance(n_samples, Integral):
-        raise TypeError("Development sample count must be an integer.")
-    if n_samples < 2:
-        raise ValueError(
-            "At least two development samples are required for validation."
-        )
-    validation_size = max(
-        int(minimum_validation_samples),
-        int(np.ceil(n_samples * validation_fraction)),
-    )
-    if validation_size >= n_samples:
-        raise ValueError(
-            "validation_fraction leaves no samples for fold training."
-        )
-    permutation = np.random.default_rng(seed).permutation(n_samples)
-    validation_indices = np.sort(permutation[:validation_size])
-    training_indices = np.sort(permutation[validation_size:])
-    return training_indices, validation_indices
 
 
 @dataclass

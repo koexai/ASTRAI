@@ -23,7 +23,7 @@ from astrai.utils.log_experiments import create_pipeline_run_id
 def main(argv=None):
     """Main function to run the full split training pipeline.
 
-    1. Preprocessing (PCA + scalers fitted once, shared by both models)
+    1. Preprocessing (Shared partitions and training-only scaler/PCA bundles)
     2. Characterizer training (own experiment dir)
     3. Generator training (own experiment dir)
     """
@@ -51,7 +51,7 @@ def main(argv=None):
     cfg = load_config(config_path)
     pipeline_run_id = create_pipeline_run_id()
 
-    # 1. Preprocessing (PCA + scalers fitted once, shared by both models)
+    # 1. Preprocessing (Shared partitions and training-only scaler/PCA bundles)
     print("=" * 50)
     print("STAGE 1: PREPROCESSING")
     print("=" * 50)
@@ -89,10 +89,10 @@ def main(argv=None):
     print(f"  Characterizer: {char_exp}")
     print(f"  Generator:     {gen_exp}")
     print("=" * 50)
-    print("\nInference command:")
-    print(
-        f"  astrai infer-split --exp-char {char_exp} --exp-gen {gen_exp}"
-    )
+    print("\nEach selected checkpoint retains its own fold preprocessing.")
+    print("For paired inference, use compatible checkpoints from the same shared fold.")
+    print("Independently selected cross-validation winners may have different scalers.")
+
 
 
 if __name__ == "__main__":
