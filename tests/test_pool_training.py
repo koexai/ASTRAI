@@ -27,7 +27,10 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.curves = rng.uniform(1, 3, size=(18, 12)).astype(np.float32)
         self.parameters = rng.uniform(0.1, 2, size=(18, 2)).astype(np.float32)
         model = {"width": 4, "depth": 1, "dropout": 0.0}
-        training = {"epochs": 2, "batch_size": 4, "learning_rate": 0.001, "test_fold": 1}
+        # Each outer fold has nine training curves after the shared holdout.
+        # Three divides both LCGen's nine clean pairs and PPReg/Unified's
+        # eighteen pairs, avoiding singleton batches in the residual BatchNorm.
+        training = {"epochs": 2, "batch_size": 3, "learning_rate": 0.001, "test_fold": 1}
         checkpoint = {"model": "model.pth", "x_scaler": "x.pkl", "y_scaler": "y.pkl", "pca": "pca.pkl"}
         self.cfg = {"data": {"n_days": 12, "samples_per_day": 1, "n_params": 2,
                              "param_names": ["Mass", "Energy"]},
