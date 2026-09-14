@@ -257,8 +257,8 @@ remain the primary results.
 
 ### Preprocessing (`astrai preprocess`)
 
-Fits scalers and PCA once on the full dataset, then creates K-Fold splits with
-LSST-augmented training data. Each invocation creates an isolated run; it does
+Partitions original samples into outer-development/test and shared training/validation
+pools before fitting scalers and PCA. Each invocation creates an isolated run; it does
 not write directly into a shared `preprocessed/` directory.
 
 ```bash
@@ -279,11 +279,15 @@ preprocessed/
     config.yaml                            # Exact configuration snapshot
     code.zip                               # Python source snapshot
     metadata.yaml                          # Run, fold and Git metadata
-    x_scaler.pkl, y_scaler.pkl, pca.pkl    # Global artefacts
+    partitions.yaml                        # Shared sample assignments
     x_raw.npy                              # Original light curves
     y_physical.npy                         # Physical parameters
     y_transformed.npy                      # log1p physical parameters
     fold_1/
+      bundle.yaml                          # Fit pool, policy and learned-state identity
+      x_scaler.pkl, y_scaler.pkl, pca.pkl   # Fitted on this training subset only
+      x_validation_pca.npy                 # Clean validation inputs
+      y_validation_scaled.npy              # Validation parameters
       x_train_clean_pca.npy                 # Clean training curves (PCA space)
       x_train_aug_pca.npy                   # LSST-augmented training curves
       x_test_pca.npy                        # Test curves (PCA space)
@@ -291,26 +295,64 @@ preprocessed/
       y_train_scaled.npy, y_test_scaled.npy # Scaled parameters
       y_test_transformed.npy                # Test parameters in model space
       y_test_physical.npy                   # Test parameters in physical space
-      train_idx.npy, test_idx.npy           # Fold indices
+      train_idx.npy, test_idx.npy           # Outer-development and outer-test
+      training_idx.npy, validation_idx.npy  # Effective training and validation
     fold_2/
       ...
 ```
 
 `metadata.yaml` records the artefact schema version, UTC start and completion
 times, run status, configured random seed, fold list, Git commit, branch and
-whether the working tree was dirty. It also records the dtype and shape of
+whether the working tree was dirty. It also records the digest, dtype and shape of
 every NumPy artefact produced by a completed run. The current schema records
 the seed-derivation scheme, the effective K-fold, PCA and per-fold augmentation
 seeds, and a snapshot of the runtime environment. Its version history is
 summarised under Experiment Tracking.
 
-Persisted model arrays use `float32`, while fold indices use `int64`. The cast
-is applied after augmentation, scaling and PCA, so it does not change those
-intermediate calculations; it makes the saved representation match the
-`float32` tensors already used by PyTorch. Existing preprocessing directories
-containing legacy `float64` model arrays remain supported: training and
-diagnostic loaders normalise them to `float32` in memory. Failed runs remain
-marked as `failed` and are never silently reused.
+Persisted model arrays use `float32`; original-sample indices use `int64`.
+Validation and test are clean. Failed runs remain marked as `failed` and are
+never silently reused. A dataset digest identifies its contents and row order;
+the canonical arrays are retained so the data remain recoverable.
+
+Learned preprocessing must only use samples from the training pool of its
+current role/fold. ASTRAI additionally chooses **clean-only fitting**: curve
+scaling and PCA use clean training curves, and parameter scaling uses one
+transformed parameter row per original training sample. Augmentations are
+transformed afterwards and are additional Characterizer inputs; they never
+contribute to the fit or become Generator targets. Clean-only fitting is an
+ASTRAI policy, not a general requirement of cross-validation.
+
+`partitioning.validation_fraction` (default `0.1`) controls the shared holdout.
+Legacy training-section values remain accepted only when they agree with each
+other and any shared value. At least two validation samples are reserved.
+Both split stages use the same assignments even when run separately. The outer
+K-fold assignment is unchanged; validation uses a new stage-independent stream.
+
+The preprocessing interfaces also support these roles:
+
+| Role | Fit pool | Excluded from fit |
+| --- | --- | --- |
+| Inner selection | Each K_select fold-training within outer-development | Its validation and the outer-test |
+| Outer refit | Entire outer-development, with fresh objects | Outer-test |
+| Final selection | Each K_select fold-training of the full admitted dataset | Its fold-validation |
+| Final refit | Entire admitted dataset, with fresh objects | Any external data |
+
+Optional `partitioning.selection_folds` defines the same K_select for outer
+and final selection. When supplied, all assignments are recorded and PCA size
+is checked on every selection training pool. No value is chosen implicitly.
+These are partition and fit/transform interfaces: the executable trainers still
+use holdout validation, epoch-based checkpoint selection and no outer/final
+model refit. Their results do not estimate a selection-then-refit procedure.
+Selection/refit preprocessing calls create fresh objects; no inner cache is
+silently transferred. Callers can keep future inner bundles in memory. Current
+precomputed holdout bundles remain in their isolated run for both stage consumers.
+
+Each saved checkpoint carries its own fitted preprocessing. Independently
+selected CV winners can have different parameter scalers and cannot then be
+used for direct scaled handoff. For paired use, train both stages on the same
+`test_fold` and shared preprocessing run. Compatibility checks reject mismatched
+scaling and parameter semantics; no automatic conversion is performed. A CV
+winner is not a final-refitted operational model.
 
 ### Target representation
 
@@ -327,18 +369,20 @@ are decoded, so extrapolation remains visible. New configurations record
 `data.target_transform: log1p`; configurations from before this field was
 introduced retain `log1p` as their compatibility default.
 
-New preprocessing runs use artefact schema 5 and record both physical and
-transformed target arrays with unambiguous filenames. Metadata-free legacy
-artefact directories remain readable. Versioned schema 1--4 preprocessing
-runs must be regenerated because their stored target representation is not
-self-describing.
+New preprocessing runs use artefact schema 6. New training requires these
+pool-specific bundles and verified sample assignments: regenerate global or
+metadata-free preprocessing before training. Historical experiments remain
+readable with their original semantics; diagnostic target readers retain schema
+5 and metadata-free compatibility. Schemas 1--4 have ambiguous target metadata.
 
 ### Reproducibility
 
 The configured `random_seed` is the base for independent deterministic
 streams. Stable NumPy `SeedSequence` namespaces derive separate seeds for PCA,
 each fold's augmentation, model initialisation and DataLoader shuffling. The
-validation split has its own derived stream. The
+validation split is shared by both model stages. Selection/refit roles have
+separate derived streams, while existing model and DataLoader streams remain
+unchanged. The
 K-fold splitter continues to use the configured base seed directly, preserving
 the configured fold assignment.
 
@@ -563,7 +607,8 @@ All hyperparameters are set via YAML config files in `configs/`.
 | `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits`, `random_seed`, validation and selection controls |
 | `loss` | `alpha_char`, `alpha_gen` (loss weights) |
 
-Every training section accepts `validation_fraction` and
+`partitioning.validation_fraction` sets the shared validation split. Legacy
+training-section fractions must agree. Every training section accepts
 `checkpoint_selection.metric`. Supported selection metrics are `R2` (the
 default, maximised), `RMSE`, `RRMSE` and `MAE` (minimised). The metric space is
 fixed by the model contract: transformed aggregate characterisation for the
@@ -623,10 +668,10 @@ PyTorch backends, thread counts and effective deterministic settings. Failures
 retain their error and any partial fold records. Characterizer and Generator
 runs started by `astrai pipeline` share a
 `pipeline_run_id`, and each snapshots the metadata of its completed
-preprocessing input. Validation-based split training requires the current raw
-arrays and global fold-index files; legacy preprocessing directories without
-those unambiguous row mappings must be regenerated. Versioned preprocessing
-runs must use the current self-describing target contract.
+preprocessing input. New split training validates canonical data identity, shared
+partitions and each fold bundle before optimisation. Model reload validates the
+selected checkpoint and its preprocessing association. Unified runs retain
+canonical source arrays and their partition plan alongside the experiment.
 
 Source provenance follows the installed `astrai` package location rather than
 the process working directory. An editable checkout records that checkout's
@@ -649,10 +694,12 @@ configuration compatibility while keeping all output within the current run.
 | Preprocessing artefacts | 3 | Seed-derivation scheme and effective preprocessing seed plan |
 | Preprocessing artefacts | 4 | Python, platform, installed distributions and PyTorch runtime environment |
 | Preprocessing artefacts | 5 | Explicit physical, transformed and scaled target artefacts and target-transformation contract |
+| Preprocessing artefacts | 6 | Shared partitions, training-only bundles, dataset identity, array digests and explicit fit policy |
 | Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
 | Training experiments | 2 | Runtime environment and effective deterministic execution settings |
 | Training experiments | 3 | Target-transformation contract and explicit metric-space metadata |
 | Training experiments | 4 | Explicit train/validation/test indices, validation-based epoch and fold selection, early-stopping evidence and unambiguous selected-checkpoint metadata |
+| Training experiments | 5 | Fold preprocessing provenance, selected checkpoint association and recoverable unified preprocessing sources |
 
 ## Metrics
 
