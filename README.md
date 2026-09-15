@@ -354,6 +354,50 @@ used for direct scaled handoff. For paired use, train both stages on the same
 scaling and parameter semantics; no automatic conversion is performed. A CV
 winner is not a final-refitted operational model.
 
+### Direct bolometric noise kernels
+
+`astrai.utils.augmentation` exposes two standalone NumPy kernels. Both accept
+a 1D curve or 2D batch in `log10(L_bol / [erg s^-1])` and return a new float64
+array in the same space and shape:
+
+* `add_iid_gaussian_noise_in_log10_luminosity(x, sigma_dex=..., rng=...)`
+  adds independent zero-mean Gaussian noise in dex. This is an empirical
+  robustness baseline and diagnostic tool, equivalent to multiplicative
+  lognormal noise in luminosity. It preserves the log-space mean and linear
+  median, not the linear mean.
+* `add_heteroscedastic_noise_in_normalised_luminosity(x, a=..., b=...,
+  x_ref=42.0, rng=...)` uses `f = 10**(x - x_ref)` and Gaussian proposals with
+  mean `f` and variance `a*f + b`. Only non-positive proposals are resampled,
+  giving a Gaussian conditioned on positivity, with no clipping floor.
+
+`x_ref=42.0` is a **normalisation convention**, not a physically calibrated
+value. The numerical coefficients `a` and `b` depend on that convention.
+The source-dependent variance term `a*f` and constant term `b` form an
+effective bolometric augmentation model, not a calibrated LSST detector
+simulation. For exploratory use, `a=0.01`, `b=0.0004` at `x_ref=42` give a
+nominal relative standard deviation of about 10.2% at `f=1`. These are
+illustrative, uncalibrated values, not default amplitudes.
+
+Positivity conditioning changes both mean and variance at low signal-to-noise:
+`a*f+b` describes the proposal variance. As `f` tends to zero with `b>0`, the
+output mean tends to `sqrt(b)*sqrt(2/pi)`. Very faint input values can therefore
+be strongly perturbed. A numeric log10 value of zero is not treated as missing
+data. Invalid or unrepresentable arithmetic raises an error; there is no
+silent numerical floor. Positive sampling is bounded at 128 draws per element.
+
+Pass a local `numpy.random.Generator` for repeatability with identical inputs,
+order and parameters. Resampling means that changing batch partitioning need
+not preserve individual draws. Zero amplitude returns an identical copy
+without consuming the generator; neither kernel modifies NumPy's global RNG.
+
+These kernels are direct APIs only: no YAML selector is provided and the
+existing training, masking and diagnostic pipeline is unchanged. The three
+older functions (`add_gaussian_noise`, `add_gaussian_noise_slow` and
+`add_exp_gaussian_log_noise`) are deprecated for new use but retain their
+signatures and numerical behaviour for historical reproduction and backwards
+compatibility, without runtime deprecation warnings. The current pipeline
+still calls `add_gaussian_noise`.
+
 ### Target representation
 
 ASTRAI uses one explicit target contract throughout preprocessing, training,
