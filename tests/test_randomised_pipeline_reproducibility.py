@@ -35,18 +35,18 @@ class AugmentationReproducibilityTests(unittest.TestCase):
         np.testing.assert_array_equal(actual, curves + 0.5 * expected_noise)
 
     def test_explicit_rng_repeats_noise_and_masks(self):
-        curves = np.arange(120, dtype=np.float64).reshape(4, 30) / 10
+        curves = np.arange(4 * 421, dtype=np.float64).reshape(4, 421) / 10
 
         first = apply_lsst_pipeline(
             curves,
-            n_days=30,
+            n_days=421,
             noise_std=0.05,
             samples_per_day=1,
             rng=np.random.default_rng(123),
         )
         repeated = apply_lsst_pipeline(
             curves,
-            n_days=30,
+            n_days=421,
             noise_std=0.05,
             samples_per_day=1,
             rng=np.random.default_rng(123),
@@ -56,14 +56,14 @@ class AugmentationReproducibilityTests(unittest.TestCase):
         np.testing.assert_array_equal(first[1], repeated[1])
 
     def test_explicit_rng_does_not_mutate_numpy_global_state(self):
-        curves = np.ones((2, 20))
+        curves = np.ones((2, 421))
         np.random.seed(2026)
         expected = np.random.random()
         np.random.seed(2026)
 
         apply_lsst_pipeline(
             curves,
-            n_days=20,
+            n_days=421,
             noise_std=0.05,
             samples_per_day=1,
             rng=np.random.default_rng(42),
@@ -102,7 +102,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
     def test_two_runs_produce_identical_numpy_artefacts(self):
         cfg = {
             "data": {
-                "n_days": 12,
+                "n_days": 421,
                 "samples_per_day": 1,
             },
             "preprocessing": {
@@ -112,7 +112,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
             },
             "augmentation": {"noise_std": 0.05},
         }
-        x_raw = np.linspace(0.1, 4.8, 96).reshape(8, 12)
+        x_raw = np.linspace(0.1, 4.8, 8 * 421).reshape(8, 421)
         y_raw = np.linspace(0.1, 1.6, 16).reshape(8, 2)
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -164,7 +164,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 first_metadata["preprocessing_artefact_schema_version"],
-                6,
+                7,
             )
             self.assertEqual(
                 load(first_dir / "fold_1" / "pca.pkl").random_state,

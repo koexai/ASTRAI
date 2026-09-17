@@ -57,6 +57,16 @@ class DummyParameterScaler:
 
 
 class DiagnosticConfigurationTests(unittest.TestCase):
+    def test_masking_defaults_are_normalised_and_mismatches_rejected(self):
+        from dataclasses import asdict
+        from astrai.utils.masking import MaskingConfig
+        char_cfg, gen_cfg = make_config(), make_config()
+        gen_cfg["augmentation"]["masking"] = asdict(MaskingConfig())
+        validate_experiment_configs(char_cfg, gen_cfg)
+        gen_cfg["augmentation"]["masking"]["moon_loss_hours"] = 2
+        with self.assertRaisesRegex(ValueError, "augmentation/time"):
+            validate_experiment_configs(char_cfg, gen_cfg)
+
     def test_loads_canonical_config_alongside_metadata_snapshots(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

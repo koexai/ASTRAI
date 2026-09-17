@@ -2,7 +2,7 @@
 
 The command validates the characterizer and generator configurations,
 their test fold, their shared physical-parameter scaling, and the
-preprocessed test artefacts. It applies one seeded LSST augmentation to
+preprocessed test artefacts. It applies one seeded phenomenological augmentation to
 the complete test batch and produces:
 
 1. light-curve reconstructions for selected test samples;
@@ -14,6 +14,7 @@ Named samples are ranked exclusively by augmentation RMSE, not by model
 performance. Use the installed ``astrai plot-results`` command.
 """
 import argparse
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -21,6 +22,7 @@ import numpy as np
 import torch
 
 from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day, view_configuration
 from astrai.utils.array_dtypes import as_model_array, load_model_array
 from astrai.utils.checkpoints import load_config, load_characterizer, load_generator
 from astrai.utils.target_transformations import (
@@ -60,7 +62,6 @@ _SHARED_CONFIG_FIELDS = (
     ("data.n_days", ("data", "n_days")),
     ("data.n_params", ("data", "n_params")),
     ("data.param_names", ("data", "param_names")),
-    ("data.samples_per_day", ("data", "samples_per_day")),
     (
         "preprocessing.pca_components",
         ("preprocessing", "pca_components"),
@@ -124,6 +125,9 @@ def validate_experiment_configs(char_cfg, gen_cfg):
                 f"{label}: characterizer={char_value!r}, "
                 f"generator={gen_value!r}"
             )
+
+    if view_configuration(char_cfg) != view_configuration(gen_cfg):
+        mismatches.append("Effective augmentation/time configuration differs")
 
     if mismatches:
         details = "\n  - ".join(mismatches)
@@ -759,7 +763,7 @@ def main(argv=None):
 
     n_days = char_cfg["data"]["n_days"]
     n_params = char_cfg["data"]["n_params"]
-    samples_per_day = char_cfg["data"].get("samples_per_day", 4)
+    samples_per_day = resolve_samples_per_day(char_cfg)
     noise_std = char_cfg["augmentation"]["noise_std"]
 
     # Load models
@@ -864,14 +868,21 @@ def main(argv=None):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Plot 1: LC Reconstruction ---
-    print("\nApplying one shared LSST augmentation to the test set...")
+    print("\nApplying current phenomenological augmentation to the test set (new diagnostic corruption)...")
     x_test_aug, x_test_retained_mask = apply_lsst_pipeline(
         x_test_clean,
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
+        masking_config=resolve_masking_config(char_cfg),
         rng=np.random.default_rng(args.lsst_seed),
     )
+
+    (output_dir / "augmentation_metadata.json").write_text(json.dumps({
+        "view_configuration": view_configuration(char_cfg),
+        "seed": args.lsst_seed, "purpose": "new_diagnostic_corruption",
+        "historical_mask_reproduction": False,
+    }, indent=2) + "\n", encoding="utf-8")
 
     selected_samples = select_diagnostic_samples(
         x_test_clean,

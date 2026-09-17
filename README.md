@@ -354,6 +354,79 @@ used for direct scaled handoff. For paired use, train both stages on the same
 scaling and parameter semantics; no automatic conversion is performed. A CV
 winner is not a final-refitted operational model.
 
+### Phenomenological observation masking
+
+`apply_lsst_pipeline` retains its historical API name, but now uses the
+`phenomenological_masking_v1` recipe for incomplete bolometric observations.
+It is not an LSST survey cadence, observing-geometry or multiband simulation.
+Every clean-grid point is a candidate; no additional cadence or target number
+of observations is imposed. The current historical noise kernel is unchanged.
+
+The `augmentation.masking` mapping contains the parameters shown in the
+supplied configurations. Missing fields use the same defaults in preprocessing,
+Unified and diagnostics; unknown fields and invalid combinations are rejected.
+Defaults are exploratory, not observationally calibrated:
+
+- Daylight is an annual sinusoid of 12 +/- 2 equivalent hours, with random phase.
+- A seasonal exclusion has a random centre and a duration drawn uniformly from
+  0 to 90 days per curve. It repeats with a 365.25-day period.
+- The lunar contribution follows the historical gated cosine, with period
+  29.53 days and about 9.35 active days, removing up to four equivalent hours.
+  The active window is a phenomenological duration, not a source-Moon angle.
+- Weather alternates between exponentially distributed cloudy and clear spells.
+  The mean cloudy duration is 2.3 days; 30% nominal cloudy occupancy implies a
+  mean clear duration of about 5.37 days. The initial state is stationary.
+  Individual curves need not lose exactly 30%, and spells are not all 2.3 days.
+
+With daylight `H`, lunar contribution `M`, and clear solar/weather indicators
+`S,C`, availability is `q = S*C*(24-H-moon_loss_hours*M)/24`. Solar and cloudy
+intervals force zero availability. Availability is not renormalised over the
+curve, so worse conditions can reduce the number of observations.
+
+One uniform threshold is drawn per physical one-day interval, with a random
+interval offset. A candidate at time `t` is retained exactly when `U(t) < q(t)`.
+All draws occur when creating a temporal realisation; evaluating that realisation
+on another grid consumes no random numbers. The public `generate_masking_realisation`
+and `MaskingRealisation.evaluate` APIs allow the same path to be inspected at
+multiple resolutions. On the same physical horizon and initial RNG state,
+1/day masks equal every fourth element of the corresponding 4/day masks.
+This does not guarantee equal observation counts, sampled gaps or interpolated
+curves, nor invariance to changed horizons, batch regrouping or noise RNG use.
+
+`data.n_days` is the number of samples. Time in days is `arange(n_days) /
+samples_per_day`, starting at the first clean sample; the canonical default is
+one sample/day. Declare the rate explicitly: 421 points at 1/day cover 420 days,
+whereas 1,601 points at 4/day cover 400 days. Cloud durations and threshold
+intervals never use a global digital sampling constant.
+
+Only retained values contribute to interpolation, linearly in `log10(L_bol)`.
+Missing edges use the nearest observed endpoint. One observation gives a
+constant curve; zero observations raise an error identifying the batch row.
+There is no automatic mask redraw or fallback to hidden clean/noisy values.
+Short horizons can therefore be entirely unobserved. Model-facing arrays remain
+float32 and returned observation masks are boolean. Clean-only preprocessing
+fits, clean Generator targets and sample partitions are unchanged.
+
+The component diagnostic uses the same recipe and actual retained points:
+
+```bash
+python -m astrai.utils.lsst --seed 42 --n-samples 421 --samples-per-day 1 --output masking.pdf
+```
+
+It retains the seven-panel structure of the published illustration, distinguishing
+continuous availability from the realised boolean mask. Sampling gaps are measured
+from retained candidates; neither 3-4-day gaps nor the paper's geometric thresholds
+are enforced. The historical cumulative-budget sampling helpers are not called.
+`plot-results` records the effective recipe and seed in `augmentation_metadata.json`;
+its newly generated corruption is not a reproduction of a historical observing mask.
+
+Preprocessing schema 7 identifies the effective masking parameters and interpolation
+policy in `view_configuration`; training metadata version 6 records the same identity.
+Precomputed training views without this identity, including schema 6 runs, must be
+regenerated. Missing configuration fields use the new documented recipe, not the
+historical masking. Historical target/checkpoint metadata remain readable under their
+original contracts, without claiming that old augmentation used this recipe.
+
 ### Direct bolometric noise kernels
 
 `astrai.utils.augmentation` exposes two standalone NumPy kernels. Both accept
@@ -391,7 +464,7 @@ not preserve individual draws. Zero amplitude returns an identical copy
 without consuming the generator; neither kernel modifies NumPy's global RNG.
 
 These kernels are direct APIs only: no YAML selector is provided and the
-existing training, masking and diagnostic pipeline is unchanged. The three
+new noise kernels are not selected by the training or diagnostic pipeline. The three
 older functions (`add_gaussian_noise`, `add_gaussian_noise_slow` and
 `add_exp_gaussian_log_noise`) are deprecated for new use but retain their
 signatures and numerical behaviour for historical reproduction and backwards
@@ -413,7 +486,7 @@ are decoded, so extrapolation remains visible. New configurations record
 `data.target_transform: log1p`; configurations from before this field was
 introduced retain `log1p` as their compatibility default.
 
-New preprocessing runs use artefact schema 6. New training requires these
+New preprocessing runs use artefact schema 7. New training requires these
 pool-specific bundles and verified sample assignments: regenerate global or
 metadata-free preprocessing before training. Historical experiments remain
 readable with their original semantics; diagnostic target readers retain schema
@@ -638,7 +711,7 @@ All hyperparameters are set via YAML config files in `configs/`.
 |---------|---------------|
 | `data` | `format`, `target_transform`, `n_days`, `n_params`, `param_names`, `samples_per_day` |
 | `preprocessing` | `pca_components` (32), `n_splits` (K-Fold), `random_seed` |
-| `augmentation` | `noise_std` (0.05) |
+| `augmentation` | `noise_std` (0.05), `masking` (phenomenological defaults above) |
 | `characterizer` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 | `generator` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 
@@ -739,11 +812,13 @@ configuration compatibility while keeping all output within the current run.
 | Preprocessing artefacts | 4 | Python, platform, installed distributions and PyTorch runtime environment |
 | Preprocessing artefacts | 5 | Explicit physical, transformed and scaled target artefacts and target-transformation contract |
 | Preprocessing artefacts | 6 | Shared partitions, training-only bundles, dataset identity, array digests and explicit fit policy |
+| Preprocessing artefacts | 7 | Effective masking recipe, physical-time parameters and interpolation policy for precomputed views |
 | Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
 | Training experiments | 2 | Runtime environment and effective deterministic execution settings |
 | Training experiments | 3 | Target-transformation contract and explicit metric-space metadata |
 | Training experiments | 4 | Explicit train/validation/test indices, validation-based epoch and fold selection, early-stopping evidence and unambiguous selected-checkpoint metadata |
 | Training experiments | 5 | Fold preprocessing provenance, selected checkpoint association and recoverable unified preprocessing sources |
+| Training experiments | 6 | Effective augmentation view configuration, including the masking recipe |
 
 ## Metrics
 

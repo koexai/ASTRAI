@@ -16,7 +16,7 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
     def setUp(self):
         self.cfg = {
             "data": {
-                "n_days": 6,
+                "n_days": 421,
                 "n_params": 2,
                 "param_names": ["Mass", "Energy"],
                 "samples_per_day": 1,
@@ -38,7 +38,7 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
             "loss": {"alpha_char": 1.0, "alpha_gen": 1.0},
             "checkpoint": {},
         }
-        self.x_raw = np.linspace(0.1, 4.8, 48).reshape(8, 6)
+        self.x_raw = np.linspace(0.1, 4.8, 8 * 421).reshape(8, 421)
         self.y_raw = np.linspace(0.1, 1.6, 16).reshape(8, 2)
 
     def _run_and_capture_checkpoints(self):

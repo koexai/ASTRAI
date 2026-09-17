@@ -45,6 +45,7 @@ from astrai.utils.target_transformations import (
     scaled_to_transformed,
 )
 from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.log_experiments import ExperimentRun, summarise_metric_history
 from astrai.utils.reproducibility import (
     build_training_seed_plan,
@@ -91,6 +92,7 @@ def _preprocess_fold(
     augmentation_seed,
     pca_seed,
     bundle=None,
+    masking_config=None,
 ):
     """Augment, scale, and PCA-transform a single fold's data.
     Parameters
@@ -151,7 +153,7 @@ def _preprocess_fold(
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
-        rng=make_numpy_rng(augmentation_seed),
+        rng=make_numpy_rng(augmentation_seed), masking_config=masking_config,
     )
 
     if bundle is None:
@@ -339,7 +341,7 @@ def _execute_unified_training(cfg, experiment, device):
         n_params,
         data_cfg.get("param_names"),
     )
-    samples_per_day = data_cfg.get("samples_per_day", 4)
+    samples_per_day = resolve_samples_per_day(cfg)
     n_pca = model_cfg["pca_components"]
     noise_std = cfg["augmentation"]["noise_std"]
 
@@ -452,6 +454,7 @@ def _execute_unified_training(cfg, experiment, device):
             preprocessing_seed_plan["augmentation"],
             preprocessing_seed_plan["pca"],
             bundle=bundle,
+            masking_config=resolve_masking_config(cfg),
         )
 
         configure_torch_determinism(training_seed_plan["model"])

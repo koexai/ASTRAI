@@ -1,24 +1,15 @@
-"""
-astrai.utils.lsst - Simulation of LSST-like observing conditions.
+"""Phenomenological masking diagnostics and historical LSST helper APIs.
 
-This module models the key observational constraints of the Vera C. Rubin
-Observatory (LSST) that affect ground-based time-domain surveys:
-
-* **Solar contamination** -- daylight hours and sun-elevation masking.
-* **Lunar contamination** -- phase-dependent moon brightness and proximity.
-* **Weather** -- stochastic consecutive-cloudy-night masking.
-* **Cadence** -- non-uniform temporal sampling derived from the observable
-  sky-area budget.
-
-The functions are vectorized with NumPy and designed to be called
-per-light-curve during data augmentation (see ``astrai.utils.augmentation``).
-
-References
-----------
-LSST Science Book, v2.0 (arXiv:0912.0201)
+The canonical pipeline and demo use astrai.utils.masking. The astronomical
+profile helpers and cumulative-budget sampler below are retained only as
+historical APIs; they are not an observing-geometry or survey simulation.
 """
 import numpy as np
 import matplotlib.pyplot as plt
+
+from astrai.utils.masking import (
+    MaskingConfig, build_time_axis, generate_masking,
+)
 
 # ---------------------------------------------------------------------------
 # Astronomical / site constants
@@ -30,7 +21,7 @@ SUN_PERIOD = 365.25  # Earth orbital period [days]
 MOON_PERIOD = 29.53  # Synodic lunar period  [days]
 
 CONSECUTIVE_CLOUDY_DAYS = 2.3  # Mean length of a cloudy spell [days]
-CLOUDY_PROB = 20  # Fraction of time lost to clouds [%]
+CLOUDY_PROB = 30  # Fraction of time lost to clouds [%]
 EEPS = 23.44  # Earth axial tilt [degrees]
 LATITUDE_LSST = 30  # Cerro Pachon latitude [degrees]
 PHI = LATITUDE_LSST * ROT_PER_DAY  # Site latitude [radians]
@@ -163,50 +154,23 @@ def sun_masking_np(days, day0=None, elev=None, rng=None):
     return sun_presence
 
 
-def random_cloud_masking(arr, percentage=CLOUDY_PROB, seed=None, rng=None):
-    """Apply stochastic consecutive-night cloud masking.
+def random_cloud_masking(arr, percentage=30, seed=None, rng=None, *, samples_per_day=1):
+    """Return a copy with cloudy samples zeroed (one means clear for unit input).
 
-    Randomly selects block-start indices and zeros out contiguous spans
-    of ``CONSECUTIVE_CLOUDY_DAYS * DIG_SAMPLES_X_DAY`` time-steps to
-    simulate multi-night weather losses.
-
-    Parameters
-    ----------
-    arr : array_like
-        Input array (e.g. an observability indicator).
-    percentage : int
-        Approximate fraction of time-steps to mask [%].
-    seed : int, optional
-        Seed used to create a local generator for backwards compatibility.
-    rng : numpy.random.Generator, optional
-        Explicit generator. Cannot be combined with ``seed``.
-
-    Returns
-    -------
-    numpy.ndarray
-        Copy of *arr* with cloudy epochs set to zero.
+    Weather is defined in days, with stationary exponential episodes of mean
+    2.3 days and the requested nominal occupancy. No index wrapping occurs.
+    The historical seed argument remains supported with a local RNG.
     """
-    arr = np.asarray(arr, dtype=np.float64)
-
-    masked_arr = arr.copy()
     if seed is not None and rng is not None:
         raise ValueError("seed and rng cannot be supplied together.")
-    if rng is None:
-        rng = np.random.default_rng(seed)
-
-    consecutive_cloudy_samples = CONSECUTIVE_CLOUDY_DAYS * DIG_SAMPLES_X_DAY
-
-    n_total = masked_arr.size
-    n_mask = int(
-        np.round(n_total * percentage / consecutive_cloudy_samples / 100.0)
-    )
-
-    indices = rng.choice(n_total, n_mask, replace=False)
-
-    for shift in range(int(consecutive_cloudy_samples)):
-        masked_arr.flat[indices - shift] = 0
-
-    return masked_arr
+    values = np.asarray(arr, dtype=np.float64)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("Cloud masking expects a non-empty one-dimensional array")
+    config = MaskingConfig(cloudy_fraction=percentage / 100)
+    times = build_time_axis(len(values), samples_per_day)
+    local = np.random.default_rng(seed) if rng is None else rng
+    components = generate_masking(times, config, local)
+    return np.where(components["cloud_blocked"], 0.0, values)
 
 
 def intersections_monotone(f, g):
@@ -296,77 +260,61 @@ def keep_only_samples_from_lc(lc, sampling):
     return out
 
 
-def get_masks(rng=None):
-    """Generate the LSST masking components and their combination."""
-    rng = _local_rng(rng)
-    cal = np.arange(N_SAMPLES) / DIG_SAMPLES_X_DAY
-    dh = daylight_hours_np(cal, rng=rng)
-    ml = moon_luminosity_np(cal, rng=rng)
-    sm = sun_masking_np(cal, rng=rng)
-    cm = 1 - random_cloud_masking(np.ones_like(cal), rng=rng)
-    cb = (1 - cm) * ((1 - sm) * (24 - dh - ml * 4))
-    return cal, cb, dh, ml, sm, cm
+def get_masks(rng=None, *, n_samples=N_SAMPLES, samples_per_day=1, masking_config=None):
+    """Return canonical profiles using the historical six-array tuple layout.
 
-
-def _setup_axis(ax, label):
-    """Configure a demo plot axis with right-side ticks."""
-    ax.set_ylabel(label, rotation=0, ha="right", va="center")
-    ax.tick_params(axis="y", labelleft=False, labelright=True)
-    ax.yaxis.tick_right()
-    ax.grid(True)
-
-
-def _demo_plot(seed=42):
-    """Plot all LSST masking components and the resulting sampling.
-    Demonstrates the interplay of the different masking factors
-    and how they combine to produce the final sampling pattern.
-    The top panels show the individual contributions of daylight,
-    moon luminosity, sun masking, and cloud masking.
-    The bottom panels show the combined mask and the resulting sampling epochs.
+    The combined array is availability in equivalent hours; solar/cloud arrays
+    indicate blocked samples. Use generate_masking for the actual retained mask.
     """
-    (
-        calendar,
-        combo,
-        daylight_hours,
-        moon_luminosity,
-        sun_masking,
-        cloud_masking,
-    ) = get_masks(rng=np.random.default_rng(seed))
-    sampling = np.int32(get_samples(calendar, combo))
+    parts = generate_masking(build_time_axis(n_samples, samples_per_day), masking_config, rng)
+    return (parts["time_days"], 24 * parts["availability"], parts["daylight_hours"],
+            parts["moon_contribution"], parts["sun_blocked"], parts["cloud_blocked"])
 
-    fig, axes = plt.subplots(7, 1, sharex=True, figsize=(5, 7))
 
-    axes[0].plot(calendar, daylight_hours)
-    _setup_axis(axes[0], "DayLight\nhours")
+def plot_masking_components(parts):
+    """Show the same realised mask used for sampling, not a second RNG draw."""
+    time = parts["time_days"]
+    mask = parts["retained_mask"]
+    fig, axes = plt.subplots(7, 1, sharex=True, figsize=(8, 10))
+    for ax, key, label in zip(axes[:4],
+            ("daylight_hours", "moon_contribution", "sun_blocked", "cloud_blocked"),
+            ("Daylight (h)", "Moon contribution", "Sun blocked", "Cloud blocked")):
+        ax.plot(time, parts[key])
+        ax.set_ylabel(label)
+        ax.grid(True, alpha=0.3)
+    axes[4].plot(time, parts["availability"], label="Availability q(t)")
+    axes[4].step(time, mask.astype(float), where="post", alpha=0.4, label="Retained mask")
+    axes[4].set_ylabel("Combined")
+    axes[4].legend(loc="upper right")
+    observed = time[mask]
+    axes[5].plot(observed, np.ones(len(observed)), "|")
+    axes[5].set_ylabel("Sampling")
+    if len(observed) >= 2:
+        axes[6].plot((observed[:-1] + observed[1:]) / 2, np.diff(observed), ".")
+        axes[6].set_yscale("log")
+    axes[6].set_ylabel("Gap (days)")
+    axes[6].set_xlabel("Days from first clean sample")
+    fig.suptitle("Phenomenological bolometric observation masking")
+    fig.tight_layout()
+    return fig
 
-    axes[1].plot(calendar, moon_luminosity)
-    _setup_axis(axes[1], "Moon\nmask")
 
-    axes[2].plot(calendar, sun_masking)
-    _setup_axis(axes[2], "Sun\nmask")
-
-    axes[3].plot(calendar, cloud_masking)
-    _setup_axis(axes[3], "Weather\nmask")
-
-    axes[4].plot(calendar, combo)
-    _setup_axis(axes[4], "Combined\nmask")
-
-    axes[5].plot(sampling / DIG_SAMPLES_X_DAY, np.ones_like(sampling), "|")
-    _setup_axis(axes[5], "Sampling")
-    axes[5].set_ylim(0.5, 1.5)
-
-    axes[6].plot(
-        (sampling[:-1] + sampling[1:]) / 2 / DIG_SAMPLES_X_DAY,
-        (sampling[1:] - sampling[:-1]) / DIG_SAMPLES_X_DAY,
-        "_",
-    )
-    _setup_axis(axes[6], "Sampling\nlag ")
-    axes[6].set_xlabel("Days")
-    axes[6].set_yscale("log")
-
-    fig.suptitle("Non-uniform sampling simulation LSST")
-    plt.show()
+def _demo_plot(seed=42, *, n_samples=N_SAMPLES, samples_per_day=1, masking_config=None):
+    parts = generate_masking(build_time_axis(n_samples, samples_per_day),
+                             masking_config, np.random.default_rng(seed))
+    return plot_masking_components(parts)
 
 
 if __name__ == "__main__":
-    _demo_plot()
+    import argparse
+    parser = argparse.ArgumentParser(description="Plot phenomenological masking components")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--n-samples", type=int, default=N_SAMPLES)
+    parser.add_argument("--samples-per-day", type=float, default=1)
+    parser.add_argument("--output", help="Save a figure instead of opening a window")
+    args = parser.parse_args()
+    figure = _demo_plot(args.seed, n_samples=args.n_samples, samples_per_day=args.samples_per_day)
+    if args.output:
+        figure.savefig(args.output)
+    else:
+        plt.show()

@@ -6,8 +6,8 @@ metadata is updated atomically so interrupted runs remain distinguishable from
 completed ones.
 """
 
-import hashlib
 import csv
+import hashlib
 import os
 import shutil
 import subprocess
@@ -20,6 +20,7 @@ import numpy as np
 import yaml
 
 from astrai.utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
+from astrai.utils.masking import view_configuration
 from astrai.utils.metrics import get_metric_function
 from astrai.utils.runtime_environment import (
     capture_execution_environment,
@@ -32,7 +33,7 @@ from astrai.utils.target_transformations import (
 from astrai.paths import source_checkout_root, source_snapshot_root
 
 
-EXPERIMENT_METADATA_VERSION = 5
+EXPERIMENT_METADATA_VERSION = 6
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -299,6 +300,7 @@ class ExperimentRun:
 
         metadata = {
             "experiment_metadata_version": EXPERIMENT_METADATA_VERSION,
+            "view_configuration": view_configuration(config),
             "run": {
                 "id": directory.name,
                 "stage": stage,

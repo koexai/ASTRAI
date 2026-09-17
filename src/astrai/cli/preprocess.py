@@ -23,6 +23,7 @@ import numpy as np
 import yaml
 
 from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day, view_configuration
 from astrai.utils.array_dtypes import (
     INDEX_ARRAY_DTYPE,
     MODEL_ARRAY_DTYPE,
@@ -238,7 +239,7 @@ def _initial_metadata(cfg, started_at, repository_root):
 
 def _process_fold(fold_idx, x_raw, y_physical, y_transformed, partition,
                   bundle, n_days, noise_std, samples_per_day, out_dir,
-                  augmentation_seed):
+                  augmentation_seed, masking_config=None):
     """Materialise clean/augmented training and clean validation/test views."""
     fold_dir = Path(out_dir) / f"fold_{fold_idx}"
     bundle.save(fold_dir)
@@ -252,7 +253,7 @@ def _process_fold(fold_idx, x_raw, y_physical, y_transformed, partition,
     test = partition.indices("test")
     augmented, _ = apply_lsst_pipeline(
         x_raw[train], n_days, noise_std, samples_per_day=samples_per_day,
-        rng=make_numpy_rng(augmentation_seed),
+        rng=make_numpy_rng(augmentation_seed), masking_config=masking_config,
     )
     arrays = {
         "x_train_clean_pca.npy": bundle.transform_curves(x_raw[train]),
@@ -320,14 +321,13 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
         bundles[f"fold_{fold}"] = _process_fold(
             fold, x_raw, y_physical, y_transformed, partition, bundle,
             n_days, cfg["augmentation"]["noise_std"],
-            cfg["data"].get("samples_per_day", 4), out_dir,
-            seed_plan["augmentation"][f"fold_{fold}"])
+            resolve_samples_per_day(cfg), out_dir,
+            seed_plan["augmentation"][f"fold_{fold}"], resolve_masking_config(cfg))
     return {"dataset": {"id": data_id, "sample_identity": "canonical_row_index",
                         "curves": "x_raw.npy", "physical_parameters": "y_physical.npy",
                         "transformed_parameters": "y_transformed.npy"},
             "partition_plan": "partitions.yaml", "bundles": bundles,
-            "view_configuration": {"noise_std": cfg["augmentation"]["noise_std"],
-                                   "samples_per_day": cfg["data"].get("samples_per_day", 4)},
+            "view_configuration": view_configuration(cfg),
             "fit_policy": "clean_original_samples", "protocol": "holdout_validation"}
 
 

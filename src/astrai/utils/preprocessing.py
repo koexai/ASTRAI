@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 import yaml
 
 from astrai.utils.array_dtypes import as_model_array
+from astrai.utils.masking import view_configuration
 from astrai.utils.partitions import Partition
 from astrai.utils.target_transformations import (
     PREPROCESSING_ARTEFACT_SCHEMA_VERSION, target_transform_contract,
@@ -181,7 +182,7 @@ def load_training_source(directory, cfg):
         raise ValueError("Training requires pool-specific preprocessing; regenerate artefacts")
     metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
     if metadata.get("preprocessing_artefact_schema_version") != PREPROCESSING_ARTEFACT_SCHEMA_VERSION or metadata.get("run", {}).get("status") != "completed":
-        raise ValueError("Training requires completed schema 6 preprocessing; regenerate artefacts")
+        raise ValueError("Training requires completed schema 7 preprocessing; regenerate artefacts")
     for name in ("x_raw.npy", "y_physical.npy", "y_transformed.npy"):
         path = directory / name
         expected_digest = metadata.get("array_artefacts", {}).get(name, {}).get("sha256")
@@ -193,8 +194,7 @@ def load_training_source(directory, cfg):
         raise ValueError("Canonical source arrays must contain aligned rows")
     if cfg.get("data", {}).get("n_days", curves.shape[1]) != curves.shape[1]:
         raise ValueError("Configured curve length differs from preprocessing")
-    expected_views = {"noise_std": cfg.get("augmentation", {}).get("noise_std"),
-                      "samples_per_day": cfg.get("data", {}).get("samples_per_day", 4)}
+    expected_views = view_configuration(cfg)
     if metadata.get("view_configuration") != expected_views:
         raise ValueError("Augmentation configuration differs from precomputed training views")
     data_id = dataset_identity(curves, parameters)
