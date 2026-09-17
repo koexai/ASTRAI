@@ -24,6 +24,19 @@ preprocessing:
 
 augmentation:
   noise_std: 0.05
+  # Phenomenological availability; no survey cadence or geometry.
+  masking:
+    annual_period_days: 365.25
+    daylight_mean_hours: 12.0
+    daylight_amplitude_hours: 2.0
+    seasonal_gap_min_days: 0.0
+    seasonal_gap_max_days: 90.0
+    moon_period_days: 29.53
+    moon_active_days: 9.351166666666668
+    moon_loss_hours: 4.0
+    cloudy_fraction: 0.3
+    mean_cloudy_days: 2.3
+    threshold_interval_days: 1.0
 
 # Characterizer: curves -> params (SplitMLPRegressor)
 characterizer:

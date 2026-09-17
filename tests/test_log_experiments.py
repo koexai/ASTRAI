@@ -192,7 +192,7 @@ class ExperimentRunTests(unittest.TestCase):
                 (run_dir / "config.yaml").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(metadata["experiment_metadata_version"], 5)
+        self.assertEqual(metadata["experiment_metadata_version"], 6)
         self.assertEqual(metadata["run"]["status"], "completed")
         self.assertEqual(metadata["run"]["stage"], "characterizer")
         self.assertEqual(metadata["run"]["pipeline_run_id"], "pipeline-123")

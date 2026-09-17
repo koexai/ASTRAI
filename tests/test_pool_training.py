@@ -24,7 +24,7 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         rng = np.random.default_rng(14)
-        self.curves = rng.uniform(1, 3, size=(18, 12)).astype(np.float32)
+        self.curves = rng.uniform(1, 3, size=(18, 421)).astype(np.float32)
         self.parameters = rng.uniform(0.1, 2, size=(18, 2)).astype(np.float32)
         model = {"width": 4, "depth": 1, "dropout": 0.0}
         # Each outer fold has nine training curves after the shared holdout.
@@ -32,7 +32,7 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         # eighteen pairs, avoiding singleton batches in the residual BatchNorm.
         training = {"epochs": 2, "batch_size": 3, "learning_rate": 0.001, "test_fold": 1}
         checkpoint = {"model": "model.pth", "x_scaler": "x.pkl", "y_scaler": "y.pkl", "pca": "pca.pkl"}
-        self.cfg = {"data": {"n_days": 12, "samples_per_day": 1, "n_params": 2,
+        self.cfg = {"data": {"n_days": 421, "samples_per_day": 1, "n_params": 2,
                              "param_names": ["Mass", "Energy"]},
                     "preprocessing": {"n_splits": 3, "random_seed": 42, "pca_components": 2},
                     "partitioning": {"validation_fraction": 0.2, "selection_folds": 3},
@@ -114,7 +114,7 @@ class PoolTrainingSmokeTests(unittest.TestCase):
     def test_changed_augmentation_does_not_change_clean_fit(self):
         first = self.prepare()
         changed = copy.deepcopy(self.cfg)
-        changed["augmentation"]["noise_std"] = 2.0
+        changed["augmentation"]["masking"] = {"cloudy_fraction": 0.6}
         second = self.prepare(changed, "other")
         first_source, second_source = load_training_source(first, self.cfg), load_training_source(second, changed)
         _, left = load_training_fold(first, self.cfg, 1, first_source)
@@ -143,6 +143,46 @@ class PoolTrainingSmokeTests(unittest.TestCase):
                                "--prep", str(prep), "--fold", "1", "--sample", "0",
                                "--output-dir", str(output)])
         self.assertTrue(list(output.glob("*.pdf")))
+        import json
+        diagnostic = json.loads((output / "augmentation_metadata.json").read_text())
+        self.assertFalse(diagnostic["historical_mask_reproduction"])
+        self.assertEqual(diagnostic["view_configuration"], self.metadata(prep)["view_configuration"])
+
+    def test_masking_recipe_mismatch_is_rejected_before_training(self):
+        prep = self.prepare()
+        changed = copy.deepcopy(self.cfg)
+        changed["augmentation"]["masking"] = {"moon_loss_hours": 3}
+        with self.assertRaisesRegex(ValueError, "Augmentation configuration differs"):
+            load_training_source(prep, changed)
+        metadata_file = prep / "metadata.yaml"
+        metadata = self.metadata(prep)
+        del metadata["view_configuration"]["masking"]
+        metadata_file.write_text(yaml.safe_dump(metadata))
+        with self.assertRaisesRegex(ValueError, "Augmentation configuration differs"):
+            load_training_source(prep, self.cfg)
+
+    def test_explicit_defaults_and_recorded_recipe_are_equivalent(self):
+        from dataclasses import asdict
+        from astrai.utils.masking import MaskingConfig, view_configuration
+        prep = self.prepare()
+        explicit = copy.deepcopy(self.cfg)
+        explicit["augmentation"]["masking"] = asdict(MaskingConfig())
+        source = load_training_source(prep, explicit)
+        self.assertEqual(source["metadata"]["view_configuration"], view_configuration(explicit))
+
+    def test_1601_point_split_and_unified_smoke(self):
+        from astrai.utils.masking import view_configuration
+        self.curves = np.random.default_rng(14).uniform(40, 44, (18, 1601)).astype(np.float32)
+        self.cfg["data"].update(n_days=1601, samples_per_day=4)
+        # A non-default recipe verifies forwarding through both workflows.
+        self.cfg["augmentation"]["masking"] = {"moon_loss_hours": 2, "cloudy_fraction": .2}
+        prep = self.prepare()
+        char, gen = self.run_pair(prep)
+        for path in (char, gen):
+            self.assertEqual(self.metadata(path)["view_configuration"], view_configuration(self.cfg))
+        self.test_unified_training_records_pool_and_reloads()
+        self.assertEqual(self.metadata(self.root / "unified")["view_configuration"],
+                         view_configuration(self.cfg))
 
 
 if __name__ == "__main__":

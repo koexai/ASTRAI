@@ -1,15 +1,16 @@
 """
 astrai.augmentation - Data augmentation pipeline for light-curve training.
 
-Combines additive Gaussian noise with LSST-realistic cadence degradation
-(sun masking + cloud masking) followed by linear interpolation to fill
-masked epochs.  This encourages the network to generalize across
-observational conditions rather than overfitting to uniform-cadence data.
+Combines the historical additive noise with phenomenological missing-data
+masks and interpolation in log10 bolometric luminosity. No survey cadence
+or detector geometry is simulated.
 """
 from numbers import Real
 
 import numpy as np
-from astrai.utils import lsst
+from astrai.utils.masking import (
+    MaskingConfig, build_time_axis, generate_masking, interpolate_observations,
+)
 
 
 _MAX_POSITIVE_NOISE_DRAWS = 128
@@ -319,65 +320,38 @@ def apply_lsst_pipeline(
     noise_std,
     samples_per_day=None,
     rng=None,
+    *,
+    masking_config=None,
 ):
-    """Apply noise and LSST cadence degradation to light curves.
+    """Perturb curves and interpolate phenomenologically retained observations.
 
-    For each curve:
-    1. Add noise to the full-cadence curve.
-    2. Generate stochastic sun and cloud masks.
-    3. Retain the epochs that survive both masks.
-    4. Interpolate the retained samples onto the original grid.
+    The historical function name and (curves, boolean retained_mask) return
+    contract remain supported. ``n_days`` is the number of time samples, not
+    the duration. Masking is specified by ``MaskingConfig`` or a parameter
+    mapping; omitted parameters use its documented defaults. The legacy noise
+    path and shared local RNG are unchanged. Outputs are converted to float32
+    by model/preprocessing callers as before.
 
-    Parameters
-    ----------
-    curves_batch : numpy.ndarray
-        Clean light curves with shape ``(n_samples, n_days)``.
-    n_days : int
-        Number of time steps per curve.
-    noise_std : float
-        Standard deviation passed to the existing noise function.
-    samples_per_day : int, optional
-        Digital samples per day. Defaults to
-        ``lsst.DIG_SAMPLES_X_DAY``.
-    rng : numpy.random.Generator, optional
-        Generator shared by noise and masking. Production callers should
-        supply an explicitly seeded generator.
-
-    Returns
-    -------
-    tuple[numpy.ndarray, numpy.ndarray]
-        The augmented curves and a boolean mask identifying the samples
-        retained before interpolation. Both arrays have the same shape as
-        ``curves_batch``.
+    Zero observations raise an error identifying the batch row; one produces
+    a constant curve. Two or more use linear interpolation in log10 luminosity
+    with constant edges. Hidden values never fill gaps and masks are not redrawn.
     """
-    if samples_per_day is None:
-        samples_per_day = lsst.DIG_SAMPLES_X_DAY
-    if rng is None:
-        rng = np.random.default_rng()
-
-    augmented = curves_batch.copy()
-
-    augmented = add_gaussian_noise(augmented, noise_std, rng=rng)
-    retained_mask = np.zeros_like(augmented, dtype=bool)
-
-    calendar = np.arange(n_days) / samples_per_day
-
-    for i, _ in enumerate(augmented):
-        sun_mask = lsst.sun_masking_np(calendar, rng=rng)
-        cloud_mask = lsst.random_cloud_masking(
-            np.ones_like(calendar),
-            rng=rng,
-        )
-        combined_mask = (1 - sun_mask) * (1 - cloud_mask)
-
-        curve = augmented[i]
-        valid_idx = np.where(combined_mask == 1)[0]
-        retained_mask[i, valid_idx] = True
-
-        if len(valid_idx) < 2:
-            continue
-
-        valid_vals = curve[valid_idx]
-        augmented[i] = np.interp(np.arange(n_days), valid_idx, valid_vals)
-
+    raw = np.asarray(curves_batch)
+    if raw.ndim != 2 or raw.dtype.kind not in "iuf" or not np.isfinite(raw).all():
+        raise ValueError("Curves must be a finite real two-dimensional array")
+    calendar = build_time_axis(n_days, samples_per_day)
+    if raw.shape[1] != len(calendar):
+        raise ValueError("n_days must match the number of curve samples")
+    config = MaskingConfig.from_mapping(masking_config)
+    rng = np.random.default_rng() if rng is None else rng
+    if len(raw) == 0:
+        return raw.astype(np.float64, copy=True), np.zeros(raw.shape, dtype=bool)
+    augmented = add_gaussian_noise(raw.astype(np.float64, copy=True), noise_std, rng=rng)
+    retained_mask = np.zeros(raw.shape, dtype=bool)
+    for row, curve in enumerate(augmented):
+        mask = generate_masking(calendar, config, rng)["retained_mask"]
+        if not mask.any():
+            raise ValueError(f"No observations retained for curve {row}; the mask is not resampled")
+        retained_mask[row] = mask
+        augmented[row] = interpolate_observations(curve, mask, calendar)
     return augmented, retained_mask

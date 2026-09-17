@@ -194,7 +194,7 @@ class PoolPreprocessingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as path:
             with self.assertRaisesRegex(ValueError, "regenerate"):
                 load_training_source(path, {})
-            for version, status in ((5, "completed"), (6, "failed"), (6, "running")):
+            for version, status in ((5, "completed"), (6, "completed"), (7, "failed"), (7, "running")):
                 (Path(path) / "metadata.yaml").write_text(yaml.safe_dump({
                     "preprocessing_artefact_schema_version": version, "run": {"status": status}}))
                 with self.assertRaisesRegex(ValueError, "regenerate"):

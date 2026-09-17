@@ -21,7 +21,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
     def setUp(self):
         self.cfg = {
             "data": {
-                "n_days": 4,
+                "n_days": 421,
                 "samples_per_day": 1,
                 "n_params": 2,
                 "param_names": ["Mass", "Energy"],
@@ -66,7 +66,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
 
     def _write_preprocessing_artefacts(self, prep_dir):
         rng = np.random.default_rng(42)
-        curves = rng.normal(size=(12, 4)).astype(np.float32)
+        curves = rng.normal(size=(12, 421)).astype(np.float32)
         parameters = rng.uniform(0, 3, size=(12, 2)).astype(np.float32)
         with patch.object(preprocess, "load_raw_data", return_value=(curves, parameters)):
             preprocess.run_preprocessing(self.cfg, out_dir=prep_dir)
@@ -83,7 +83,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             metadata["reproducibility"]["fold_seed_plans"],
         )
         self.assertEqual(metadata["preprocessing"]["source_run_status"], "completed")
-        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 6)
+        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 7)
         self.assertEqual(
             metadata["checkpoint"]["selected_checkpoint"]["outer_fold"],
             1,

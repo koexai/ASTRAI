@@ -3,7 +3,7 @@ visualize_reconstruction.py - Visualize the full reconstruction pipeline.
 
 For a single light curve, shows:
 1. Original curve
-2. Augmented curve (LSST noise + cadence)
+2. Augmented curve (noise + phenomenological masking)
 3. PCA-only reconstruction (to isolate PCA fidelity)
 4. Full model reconstruction (curve -> regressor -> generator -> curve)
 5. Residuals between original and reconstructed
@@ -20,6 +20,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.checkpoints import load_unified_model
 from astrai.utils.configuration import load_config
 from astrai.utils.data import load_raw_data
@@ -86,8 +87,9 @@ def plot_single(
     n_days,
     noise_std,
     per_sample_char_rmse,
-    samples_per_day=4,
+    samples_per_day=1,
     lsst_seed=42,
+    masking_config=None,
 ):
     """Plot the 3-panel visualization for a single sample.
     idx: index of the sample to plot
@@ -99,23 +101,25 @@ def plot_single(
     param_names: list of parameter names for printing
     y_scaler: StandardScaler for output parameters (for inverse transforming predictions)
     pred_params_sc: predicted parameters in scaled space, shape (n_samples, n_params)
-    n_days: number of days in the curves
+    n_days: number of time samples in the curves
     noise_std: standard deviation of Gaussian noise for augmentation
     per_sample_char_rmse: array of characterization RMSE for each sample
-    samples_per_day: number of samples to generate per day for the LSST plot
-    lsst_seed: base seed for the sample-local LSST augmentation
+    samples_per_day: clean candidate samples per physical day
+    lsst_seed: base seed for the sample-local phenomenological augmentation
     """
 
     original_curve = x[idx]
     reconstructed_curve = model_reconstructed[idx]
 
-    # LSST augmentation
+    # A new diagnostic corruption, not a historical observing mask.
+    print("Applying current phenomenological masking to the diagnostic curve.")
     augmented_curves, _ = apply_lsst_pipeline(
         x[idx: idx + 1],
         n_days,
         noise_std,
         samples_per_day=samples_per_day,
         rng=make_numpy_rng(derive_diagnostic_seed(lsst_seed, idx)),
+        masking_config=masking_config,
     )
     augmented_curve = augmented_curves[0]
 
@@ -146,7 +150,7 @@ def plot_single(
         print(line)
 
     # Plot
-    time_axis = np.arange(n_days)
+    time_axis = np.arange(n_days) / samples_per_day
     fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
     title = f"Sample {idx}"
     if per_sample_char_rmse is not None:
@@ -172,11 +176,11 @@ def plot_single(
     # Panel 1: Original vs Augmented
     axes[0].plot(time_axis, original_curve, label="Original", alpha=0.9)
     axes[0].plot(
-        time_axis, augmented_curve, label="Augmented (LSST)", alpha=0.7
+        time_axis, augmented_curve, label="Augmented", alpha=0.7
     )
-    axes[0].set_ylabel("Flux")
+    axes[0].set_ylabel("log10 bolometric luminosity")
     axes[0].set_ylim(*ylim)
-    axes[0].set_title("Original vs LSST-Augmented Curve")
+    axes[0].set_title("Original vs Phenomenologically Augmented Curve")
     axes[0].legend()
 
     # Panel 2: Original vs PCA-only vs Model reconstruction
@@ -195,7 +199,7 @@ def plot_single(
         alpha=0.7,
         linestyle="-.",
     )
-    axes[1].set_ylabel("Flux")
+    axes[1].set_ylabel("log10 bolometric luminosity")
     axes[1].set_ylim(*ylim)
     axes[1].set_title("Reconstruction Comparison")
     axes[1].legend()
@@ -252,7 +256,7 @@ def main(argv=None):
         "--lsst-seed",
         type=int,
         default=42,
-        help="Base seed for reproducible LSST diagnostic augmentation",
+        help="Base seed for reproducible phenomenological diagnostic augmentation",
     )
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default.yaml")
@@ -263,7 +267,7 @@ def main(argv=None):
     n_days = cfg["data"]["n_days"]
     noise_std = cfg["augmentation"]["noise_std"]
     param_names = cfg["data"]["param_names"]
-    samples_per_day = cfg["data"].get("samples_per_day", 4)
+    samples_per_day = resolve_samples_per_day(cfg)
 
     # Load model from experiment dir or project root
     if args.exp:
@@ -335,6 +339,7 @@ def main(argv=None):
             per_sample_char_rmse,
             samples_per_day=samples_per_day,
             lsst_seed=args.lsst_seed,
+            masking_config=resolve_masking_config(cfg),
         )
 
     plt.show()

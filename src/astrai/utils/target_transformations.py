@@ -9,7 +9,7 @@ import yaml
 
 TARGET_TRANSFORM_NAME = "log1p"
 TARGET_TRANSFORM_VERSION = 1
-PREPROCESSING_ARTEFACT_SCHEMA_VERSION = 6
+PREPROCESSING_ARTEFACT_SCHEMA_VERSION = 7
 
 
 def target_transform_contract(cfg=None):
@@ -176,7 +176,7 @@ def validate_preprocessing_target_contract(preprocessing_dir, cfg):
             f"found status {status!r} in {metadata_path}"
         )
     schema = metadata.get("preprocessing_artefact_schema_version")
-    if schema not in (5, PREPROCESSING_ARTEFACT_SCHEMA_VERSION):
+    if schema not in (5, 6, PREPROCESSING_ARTEFACT_SCHEMA_VERSION):
         raise ValueError(
             "Preprocessing target representation is not compatible with "
             f"schema {PREPROCESSING_ARTEFACT_SCHEMA_VERSION}; found schema "

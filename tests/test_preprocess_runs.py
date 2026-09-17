@@ -104,7 +104,7 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["preprocessing_artefact_schema_version"],
-                6,
+                7,
             )
             self.assertEqual(metadata["target_transform"]["name"], "log1p")
             self.assertEqual(metadata["run"]["status"], "completed")
@@ -326,7 +326,10 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
 
     def test_generation_applies_the_target_transform_once(self):
         cfg = {"data": {"target_transform": "log1p", "n_days": 2, "samples_per_day": 1},
-               "augmentation": {"noise_std": 0.05},
+               # Two-point fixture tests target conversion, not observability.
+               "augmentation": {"noise_std": 0.05, "masking": {
+                   "daylight_mean_hours": 0, "daylight_amplitude_hours": 0,
+                   "moon_loss_hours": 0, "seasonal_gap_max_days": 0, "cloudy_fraction": 0}},
                "preprocessing": {"pca_components": 1, "n_splits": 2, "random_seed": 42}}
         x_raw = np.arange(16, dtype=np.float32).reshape(8, 2)
         y_physical = np.arange(16, dtype=np.float32).reshape(8, 2)
