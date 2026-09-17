@@ -427,6 +427,74 @@ regenerated. Missing configuration fields use the new documented recipe, not the
 historical masking. Historical target/checkpoint metadata remain readable under their
 original contracts, without claiming that old augmentation used this recipe.
 
+### Additional masking diagnostics
+
+The optional report command evaluates many independent masking realisations,
+without adding noise or running a model. It leaves the augmentation recipe
+unchanged. For the usual candidate grids:
+
+```bash
+MPLBACKEND=Agg python -m astrai.utils.masking_diagnostics \
+  --seed 42 --n-realisations 500 --n-samples 421 --samples-per-day 1 \
+  --output-dir masking_diagnostics_421
+
+MPLBACKEND=Agg python -m astrai.utils.masking_diagnostics \
+  --seed 42 --n-realisations 500 --n-samples 1601 --samples-per-day 4 \
+  --output-dir masking_diagnostics_1601
+```
+
+Each command creates three plots and their numerical data:
+
+- `ensemble.pdf`: retained fraction, exact clouded physical-time fraction,
+  maximum internal gaps, leading/trailing boundary gaps, cumulative component
+  exclusions and interpolation error over missing samples.
+- `resolution.pdf`: the **same physical paths** evaluated at 1/day and 4/day,
+  with the number of disagreements at common times. Fractions of retained
+  candidates can differ even when every common-time decision agrees.
+- `interpolation.pdf`: the first seed's clean curve, retained points, filled
+  curve and residuals, with constant boundary fills shaded separately.
+- `realisations.csv`, `resolution.csv`, `example.csv` and `summary.json`:
+  per-realisation metrics, plotted numerical values, seeds, resolved recipe,
+  grid, curve identity and empty/single-observation counts.
+
+Use a **new or empty** output directory. The default curve is an explicitly
+labelled illustrative synthetic example, not a semi-analytical model or an
+observational calibration. To assess an actual clean bolometric curve, append:
+
+```bash
+--curve-file path/to/x_raw.npy --curve-index 0
+```
+
+The file must contain unscaled `log10(L_bol)` values, either one 1D curve or a
+2D `[curve, time]` array matching `--n-samples`. Do not supply PCA coefficients,
+standardised values or linear luminosities. `--config path/to/config.yaml`
+reads only `augmentation.masking`; grid settings remain explicit CLI options.
+All realisations in a report mask the **same selected curve**: interpolation
+error statistics measure its sensitivity to missing observations, not model
+accuracy or population-wide performance. Seeds are `seed + i`, including the
+unmodified first seed. The diagnostic does not consume the pipeline's noise
+RNG, so it is not a reproduction of a training augmentation with the same seed.
+
+Cloud occupancy is measured from physical episode durations, including the
+parts at both boundaries; it is not estimated by counting cloudy candidates.
+The nominal fraction is an ensemble expectation. The component chart adds
+Daylight, Moon, Sun and Clouds in that order with shared thresholds. Its losses
+are cumulative and order-dependent because exclusions overlap.
+
+Zero-observation masks are counted and not redrawn; their interpolation and
+associated error/gap statistics are undefined. A single observation produces
+a constant fill with no internal-gap statistic. With no missing samples,
+missing-point RMSE is undefined. Undefined CSV metrics are empty cells;
+example interpolation uses NaN when unavailable and JSON summaries use null.
+The core augmentation pipeline still raises on zero observations.
+
+The 421/1 and 1601/4 reports span 420 and 400 days respectively and should not
+be compared as paired realisations. Each report performs its own resolution
+comparison within its physical horizon (421 vs 1681, or 401 vs 1601 points).
+The number of physical model parameters does not enter the masking recipe.
+These reports assess missing-data behaviour; they do not validate survey
+cadence, observed bolometric population statistics or downstream model quality.
+
 ### Direct bolometric noise kernels
 
 `astrai.utils.augmentation` exposes two standalone NumPy kernels. Both accept
