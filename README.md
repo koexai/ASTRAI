@@ -356,11 +356,12 @@ winner is not a final-refitted operational model.
 
 ### Phenomenological observation masking
 
-`apply_lsst_pipeline` retains its historical API name, but now uses the
-`phenomenological_masking_v1` recipe for incomplete bolometric observations.
+`apply_augmentation` uses the `phenomenological_masking_v1` recipe for
+incomplete bolometric observations, after the configured noise stage.
 It is not an LSST survey cadence, observing-geometry or multiband simulation.
 Every clean-grid point is a candidate; no additional cadence or target number
-of observations is imposed. The current historical noise kernel is unchanged.
+of observations is imposed. `apply_lsst_pipeline` is an alias with the same
+new explicit noise configuration and seed arguments.
 
 The `augmentation.masking` mapping contains the parameters shown in the
 supplied configurations. Missing fields use the same defaults in preprocessing,
@@ -391,7 +392,10 @@ and `MaskingRealisation.evaluate` APIs allow the same path to be inspected at
 multiple resolutions. On the same physical horizon and initial RNG state,
 1/day masks equal every fourth element of the corresponding 4/day masks.
 This does not guarantee equal observation counts, sampled gaps or interpolated
-curves, nor invariance to changed horizons, batch regrouping or noise RNG use.
+curves, nor invariance to changed horizons or batch regrouping. Modern noise
+models use a separate masking stream, so changing their parameters, resampling
+or excluded-zero count does not change the mask. Legacy modes share one stream
+between noise and masking and preserve their historical draw consumption.
 
 `data.n_days` is the number of samples. Time in days is `arange(n_days) /
 samples_per_day`, starting at the first clean sample; the canonical default is
@@ -420,12 +424,12 @@ are enforced. The historical cumulative-budget sampling helpers are not called.
 `plot-results` records the effective recipe and seed in `augmentation_metadata.json`;
 its newly generated corruption is not a reproduction of a historical observing mask.
 
-Preprocessing schema 7 identifies the effective masking parameters and interpolation
-policy in `view_configuration`; training metadata version 6 records the same identity.
-Precomputed training views without this identity, including schema 6 runs, must be
-regenerated. Missing configuration fields use the new documented recipe, not the
-historical masking. Historical target/checkpoint metadata remain readable under their
-original contracts, without claiming that old augmentation used this recipe.
+Preprocessing schema 8 identifies the resolved noise recipe, RNG policy, masking
+parameters and interpolation policy in `view_configuration`; training metadata
+version 7 records the same identity. Precomputed training views from earlier
+schemas must be regenerated. Training rejects mismatched recipes, seed plans
+and fold augmentation records. There is no migration of intermediate noise
+configurations or precomputed views.
 
 ### Additional masking diagnostics
 
@@ -495,6 +499,64 @@ The number of physical model parameters does not enter the masking recipe.
 These reports assess missing-data behaviour; they do not validate survey
 cadence, observed bolometric population statistics or downstream model quality.
 
+### Configured noise augmentation
+
+Preprocessing, separate and unified training, and reconstruction diagnostics
+use one explicit `augmentation.noise` mapping. All supplied configurations use:
+
+```yaml
+augmentation:
+  noise:
+    model: iid_log10
+    sigma_dex: 0.05
+```
+
+This is a simple, transparent **empirical operational baseline**, chosen to
+make noise augmentation visible and controllable. It is not a physically
+realistic noise model, an LSST observation model or ASTRAI's scientifically
+canonical choice. A scientifically recommended model remains to be determined.
+
+| Family | Configuration model | Parameters | Behaviour |
+| --- | --- | --- | --- |
+| Modern | `iid_log10` | Required `sigma_dex` | Independent additive Gaussian noise in log10 luminosity |
+| Modern | `heteroscedastic_normalised` | Required `a`, `b`; `x_ref=42.0` | Gaussian proposals in normalised luminosity, conditioned on positivity |
+| Legacy | `legacy_iid_gaussian` | Required `noise_std` | Historical `add_gaussian_noise_slow`, with an independent draw per element |
+| Legacy | `legacy_tiled_gaussian` | Required `noise_std` | Historical `add_gaussian_noise`, tiling a batch-length noise vector and reshaping it to the input batch |
+| Legacy | `legacy_exp_sqrt_gaussian` | Required `sigma`; `eps=1e-12` | Historical `add_exp_gaussian_log_noise`, using natural exp/log and a clipping floor |
+
+Parameters must be finite real scalars; amplitudes are non-negative and `eps`
+is strictly positive. Unknown models, missing or incompatible parameters, and
+the old top-level `augmentation.noise_std` are errors. A missing noise mapping
+does not silently select a model. The defaults above are explicit in the YAML
+templates. Legacy modes are retained for historical reproduction, comparison
+and diagnostics, not as recommended modern alternatives. Their amplitudes
+are not interchangeable with the heteroscedastic coefficients.
+
+The heteroscedastic **ASTRAI adapter** temporarily excludes exactly `x == 0`
+from perturbation and consumes no noise draws for those elements. They remain
+exactly zero at the output of the noise stage only: subsequent masking and
+interpolation are unchanged and can replace an unobserved zero. This is a
+technical workaround, not a scientifically validated interpretation of zero,
+missing or invalid data. The many exact zeros in the seven-parameter dataset
+have unresolved meaning; heteroscedastic results on that dataset are not
+scientifically reliable with respect to this issue until it is resolved.
+No configurable zero policy or inferred missing-value semantics is introduced.
+
+The adapter does not change the mathematical kernel described below. Both
+modern models work in unscaled log10 bolometric luminosity, before the existing
+masking, interpolation and fitted scaler/PCA transformation. Clean-only fits,
+clean Generator targets and sample partitions retain their existing contracts.
+
+```python
+from astrai.utils.augmentation import apply_augmentation
+
+augmented, observed = apply_augmentation(
+    curves, n_days=curves.shape[1],
+    noise_config={"model": "iid_log10", "sigma_dex": 0.05},
+    seed=42, samples_per_day=1,
+)
+```
+
 ### Direct bolometric noise kernels
 
 `astrai.utils.augmentation` exposes two standalone NumPy kernels. Both accept
@@ -531,13 +593,16 @@ order and parameters. Resampling means that changing batch partitioning need
 not preserve individual draws. Zero amplitude returns an identical copy
 without consuming the generator; neither kernel modifies NumPy's global RNG.
 
-These kernels are direct APIs only: no YAML selector is provided and the
-new noise kernels are not selected by the training or diagnostic pipeline. The three
-older functions (`add_gaussian_noise`, `add_gaussian_noise_slow` and
-`add_exp_gaussian_log_noise`) are deprecated for new use but retain their
-signatures and numerical behaviour for historical reproduction and backwards
-compatibility, without runtime deprecation warnings. The current pipeline
-still calls `add_gaussian_noise`.
+The configured adapters select these kernels, with the temporary zero exclusion
+above applied only by the heteroscedastic adapter. The three older functions
+retain their direct signatures and numerical behaviour, without runtime
+deprecation warnings. The exponential legacy function computes
+`log(max(exp(x) + sigma*sqrt(exp(x))*Z, eps))` using natural exp/log; this is
+not a conversion of ASTRAI's log10 values to physical luminosity. Its direct
+API still returns both historical outputs, while the adapter uses the first.
+Its direct `random_state`/RandomState route remains available. Configured
+augmentation instead passes a local PCG64 Generator and does not claim
+bitwise equality with RandomState-based runs or an entire historical pipeline.
 
 ### Target representation
 
@@ -554,11 +619,10 @@ are decoded, so extrapolation remains visible. New configurations record
 `data.target_transform: log1p`; configurations from before this field was
 introduced retain `log1p` as their compatibility default.
 
-New preprocessing runs use artefact schema 7. New training requires these
+New preprocessing runs use artefact schema 8. New training requires these
 pool-specific bundles and verified sample assignments: regenerate global or
-metadata-free preprocessing before training. Historical experiments remain
-readable with their original semantics; diagnostic target readers retain schema
-5 and metadata-free compatibility. Schemas 1--4 have ambiguous target metadata.
+metadata-free preprocessing and earlier schema versions before training.
+The target transform is unchanged by the noise configuration contract.
 
 ### Reproducibility
 
@@ -583,6 +647,23 @@ preprocessing runs with the same code, configuration and data produce identical
 NumPy artefacts. `astrai plot-results` accepts `--lsst-seed` (and the legacy
 spelling `--lsst_seed`); `astrai visualize-reconstruction` derives an independent
 diagnostic stream for each selected sample.
+
+Modern recipes then derive noise and masking child seeds from the existing
+augmentation seed with local namespaces 1 and 2. Provenance identifies this as
+`independent_noise_masking`, `policy_version: 1`,
+`derivation: numpy_seed_sequence_uint32`, `derivation_scheme_version: 1`,
+and `bit_generator: PCG64`. Legacy recipes record
+`legacy_shared_noise_masking`, policy version 1, and
+`derivation: augmentation_seed_direct`: both stages use the same Generator.
+Existing partition, PCA, model and DataLoader seed derivations are unchanged.
+
+Preprocessing records each fold's effective child seeds in
+`augmentation_seed_plans` and the applied recipe, input shape, row-major order
+and heteroscedastic excluded-zero count in its fold bundle's `augmentation`
+record. Separate training snapshots that provenance; unified training records
+it under `augmentation` in experiment metadata. These records identify the
+noise recipe version as well as the RNG policy version. Exact replay requires
+the same inputs, order and environment; batch regrouping is not invariant.
 
 Before every training fold, ASTRAI seeds Python, NumPy and PyTorch, enables
 deterministic PyTorch algorithms, configures deterministic cuDNN behaviour and
@@ -690,12 +771,22 @@ astrai plot-results \
 
 ```bash
 astrai visualize-reconstruction \
+    --config configs/default.yaml \
     --exp experiments/YYYYMMDD_HHMMSS_microseconds \
-    --top 5
+    --top 5 \
+    --output-dir plots/reconstruction
 ```
 
 Options: `--index N` for a specific sample, `--top N` for the N best by
 transformed-space characterisation RMSE.
+
+Both reconstruction commands use the resolved noise and masking configuration.
+`plot-results` writes `augmentation_metadata.json`; `visualize-reconstruction`
+writes a PDF and `augmentation_metadata_<index>.json` for each selected sample.
+The JSON records the input digest, scope and order, resolved recipe, effective
+seeds and versioned RNG policy, including any excluded-zero count. These are
+new diagnostic corruptions, explicitly labelled as such, not a replay of
+training observations. Supply the intended configuration explicitly.
 
 ### Semi-analytical Model Curves
 
@@ -779,7 +870,7 @@ All hyperparameters are set via YAML config files in `configs/`.
 |---------|---------------|
 | `data` | `format`, `target_transform`, `n_days`, `n_params`, `param_names`, `samples_per_day` |
 | `preprocessing` | `pca_components` (32), `n_splits` (K-Fold), `random_seed` |
-| `augmentation` | `noise_std` (0.05), `masking` (phenomenological defaults above) |
+| `augmentation` | Explicit `noise` (`model: iid_log10`, `sigma_dex: 0.05` in supplied YAML), `masking` (phenomenological defaults above) |
 | `characterizer` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 | `generator` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 
@@ -791,6 +882,7 @@ All hyperparameters are set via YAML config files in `configs/`.
 | `model` | `pca_components`, `width`, `depth`, `dropout` |
 | `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits`, `random_seed`, validation and selection controls |
 | `loss` | `alpha_char`, `alpha_gen` (loss weights) |
+| `augmentation` | Same explicit noise and masking contract as above |
 
 `partitioning.validation_fraction` sets the shared validation split. Legacy
 training-section fractions must agree. Every training section accepts
@@ -881,12 +973,14 @@ configuration compatibility while keeping all output within the current run.
 | Preprocessing artefacts | 5 | Explicit physical, transformed and scaled target artefacts and target-transformation contract |
 | Preprocessing artefacts | 6 | Shared partitions, training-only bundles, dataset identity, array digests and explicit fit policy |
 | Preprocessing artefacts | 7 | Effective masking recipe, physical-time parameters and interpolation policy for precomputed views |
+| Preprocessing artefacts | 8 | Explicit noise recipe, versioned RNG policy and effective child seeds, fold augmentation records and temporary excluded-zero counts |
 | Training experiments | 1 | Isolated lifecycle, preprocessing provenance, fold seeds and metrics, checkpoint selection and digest manifest |
 | Training experiments | 2 | Runtime environment and effective deterministic execution settings |
 | Training experiments | 3 | Target-transformation contract and explicit metric-space metadata |
 | Training experiments | 4 | Explicit train/validation/test indices, validation-based epoch and fold selection, early-stopping evidence and unambiguous selected-checkpoint metadata |
 | Training experiments | 5 | Fold preprocessing provenance, selected checkpoint association and recoverable unified preprocessing sources |
 | Training experiments | 6 | Effective augmentation view configuration, including the masking recipe |
+| Training experiments | 7 | Resolved noise and RNG identity, applied unified fold recipes and separate preprocessing provenance |
 
 ## Metrics
 
