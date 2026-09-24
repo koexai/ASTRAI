@@ -243,6 +243,69 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.assertEqual(self.metadata(self.root / "unified")["view_configuration"],
                          view_configuration(self.cfg))
 
+    def test_all_noise_modes_train_reload_and_preserve_shared_views(self):
+        from astrai.utils.augmentation import apply_augmentation
+        from astrai.utils.noise_configuration import resolve_noise_config
+        cases = [
+            ({"model": "iid_log10", "sigma_dex": .05}, 421, 1),
+            ({"model": "heteroscedastic_normalised", "a": .01, "b": .0004}, 421, 1),
+            ({"model": "legacy_iid_gaussian", "noise_std": .05}, 421, 1),
+            ({"model": "legacy_tiled_gaussian", "noise_std": .05}, 421, 1),
+            ({"model": "legacy_exp_sqrt_gaussian", "sigma": .05}, 421, 1),
+            ({"model": "heteroscedastic_normalised", "a": .01, "b": .0004}, 1601, 4),
+        ]
+        root = self.root
+        for noise, size, rate in cases:
+            with self.subTest(model=noise["model"], size=size):
+                self.root = root / f"{noise['model']}_{size}"
+                self.root.mkdir()
+                self.curves = np.random.default_rng(14).uniform(38, 44, (18, size)).astype(np.float32)
+                self.curves[:, :2] = 0
+                self.cfg["data"].update(n_days=size, samples_per_day=rate)
+                self.cfg["augmentation"]["noise"] = noise
+                prep = self.prepare()
+                char, gen = self.run_pair(prep)
+                self.test_unified_training_records_pool_and_reloads()
+                unified = self.root / "unified"
+                source = load_training_source(prep, self.cfg)
+                partition, bundle = load_training_fold(prep, self.cfg, 1, source)
+                record = source["metadata"]["bundles"]["fold_1"]["augmentation"]
+                self.assertEqual(self.metadata(unified)["augmentation"]["fold_1"], record)
+                for path, loader in ((char, load_characterizer), (gen, load_generator)):
+                    loader(self.cfg, torch.device("cpu"), path)
+                    metadata = self.metadata(path)
+                    self.assertEqual(metadata["view_configuration"], source["metadata"]["view_configuration"])
+                    snapshot = yaml.safe_load((path / "preprocessing_metadata.yaml").read_text())
+                    self.assertEqual(snapshot["bundles"]["fold_1"]["augmentation"], record)
+                noisy, _ = apply_augmentation(self.curves[partition.indices("training")], size,
+                    resolve_noise_config(self.cfg), seed=record["rng"]["augmentation_seed"], samples_per_day=rate)
+                np.testing.assert_array_equal(np.load(prep / "fold_1/x_train_aug_pca.npy"),
+                                              bundle.transform_curves(noisy))
+                self.assertEqual(record["rng"]["policy_version"], 1)
+        self.root = root
+
+    def test_nonrepresentable_noise_fails_at_model_array_boundary(self):
+        from astrai.utils.augmentation import apply_noise
+        prep = self.prepare()
+        source = load_training_source(prep, self.cfg)
+        partition, bundle = load_training_fold(prep, self.cfg, 1, source)
+        noisy = apply_noise(self.curves[partition.indices("training")],
+                            {"model": "iid_log10", "sigma_dex": 1e40}, rng=np.random.default_rng(42))
+        self.assertTrue(np.isfinite(noisy).all())
+        with self.assertRaisesRegex(ValueError, "float32"):
+            bundle.transform_curves(noisy)
+
+    def test_failed_augmentation_keeps_resolved_recipe_and_seed_plan(self):
+        self.cfg["augmentation"]["noise"] = {
+            "model": "heteroscedastic_normalised", "a": .01, "b": .0004}
+        self.cfg["augmentation"]["masking"] = {"cloudy_fraction": 1}
+        with self.assertRaisesRegex(ValueError, "No observations"):
+            self.prepare()
+        metadata = self.metadata(self.root / "prep")
+        self.assertEqual(metadata["run"]["status"], "failed")
+        self.assertEqual(metadata["view_configuration"]["noise"]["model"], "heteroscedastic_normalised")
+        self.assertEqual(metadata["augmentation_seed_plans"]["fold_1"]["policy_version"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
