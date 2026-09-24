@@ -231,14 +231,15 @@ class LuminosityNoiseTests(unittest.TestCase):
         np.testing.assert_array_equal(legacy, expected)
         np.testing.assert_array_equal(width, np.log(linear+std)-np.log(linear-std))
 
-    def test_pipeline_does_not_call_new_kernels(self):
+    def test_legacy_pipeline_does_not_call_new_kernels(self):
         with (
             patch.object(aug, "add_iid_gaussian_noise_in_log10_luminosity", side_effect=AssertionError),
             patch.object(aug, "add_heteroscedastic_noise_in_normalised_luminosity", side_effect=AssertionError),
         ):
             curves, mask = aug.apply_lsst_pipeline(
-                np.full((2, 30), 42.), 30, .05, samples_per_day=1,
-                rng=np.random.default_rng(5))
+                np.full((2, 30), 42.), 30,
+                {"model": "legacy_tiled_gaussian", "noise_std": .05},
+                samples_per_day=1, seed=5)
         self.assertEqual(curves.shape, mask.shape)
         self.assertTrue(np.isfinite(curves).all())
 

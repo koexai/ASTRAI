@@ -129,7 +129,7 @@ class ExperimentRunTests(unittest.TestCase):
 
             run = ExperimentRun.start(
                 stage="characterizer",
-                config={
+                config={"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}},
                     "data": {
                         "n_params": 2,
                         "param_names": ["Mass", "Energy"],
@@ -192,7 +192,7 @@ class ExperimentRunTests(unittest.TestCase):
                 (run_dir / "config.yaml").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(metadata["experiment_metadata_version"], 6)
+        self.assertEqual(metadata["experiment_metadata_version"], 7)
         self.assertEqual(metadata["run"]["status"], "completed")
         self.assertEqual(metadata["run"]["stage"], "characterizer")
         self.assertEqual(metadata["run"]["pipeline_run_id"], "pipeline-123")
@@ -208,6 +208,7 @@ class ExperimentRunTests(unittest.TestCase):
         self.assertEqual(
             config_snapshot,
             {
+                "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}},
                 "data": {
                     "n_params": 2,
                     "param_names": ["Mass", "Energy"],
@@ -282,7 +283,7 @@ class ExperimentRunTests(unittest.TestCase):
             run_dir = alias_root / "experiment"
             run = ExperimentRun.start(
                 stage="characterizer",
-                config={},
+                config={"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}}},
                 exp_dir=run_dir,
                 repository_root=self._source_root(root),
             )
@@ -306,7 +307,7 @@ class ExperimentRunTests(unittest.TestCase):
             run_dir = root / "experiment"
             run = ExperimentRun.start(
                 stage="generator",
-                config={"data": {"n_params": 1}},
+                config={"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}},"data": {"n_params": 1}},
                 exp_dir=run_dir,
                 repository_root=self._source_root(root),
             )
@@ -329,7 +330,7 @@ class ExperimentRunTests(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "is not empty"):
                 ExperimentRun.start(
                     stage="generator",
-                    config={},
+                    config={"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}}},
                     exp_dir=run_dir,
                     repository_root=self._source_root(root),
                 )
@@ -351,7 +352,7 @@ class ExperimentRunTests(unittest.TestCase):
             ):
                 ExperimentRun.start(
                     stage="characterizer",
-                    config={},
+                    config={"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}}},
                     exp_dir=run_dir,
                     preprocessing_dir=prep_dir,
                     repository_root=self._source_root(root),
@@ -368,7 +369,7 @@ class ExperimentRunTests(unittest.TestCase):
             run_dir = root / "experiment"
             run = ExperimentRun.start(
                 stage="unified",
-                config={},
+                config={"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}}},
                 exp_dir=run_dir,
                 repository_root=self._source_root(root),
             )

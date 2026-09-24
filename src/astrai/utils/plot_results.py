@@ -21,8 +21,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from astrai.utils.augmentation import apply_lsst_pipeline
-from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day, view_configuration
+from astrai.utils.augmentation import apply_augmentation, augmentation_record
+from astrai.utils.preprocessing import array_digest
+from astrai.utils.noise_configuration import resolve_noise_config
+from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
+from astrai.utils.augmentation_configuration import view_configuration
 from astrai.utils.array_dtypes import as_model_array, load_model_array
 from astrai.utils.checkpoints import load_config, load_characterizer, load_generator
 from astrai.utils.target_transformations import (
@@ -71,7 +74,6 @@ _SHARED_CONFIG_FIELDS = (
         "preprocessing.random_seed",
         ("preprocessing", "random_seed"),
     ),
-    ("augmentation.noise_std", ("augmentation", "noise_std")),
 )
 
 
@@ -764,7 +766,7 @@ def main(argv=None):
     n_days = char_cfg["data"]["n_days"]
     n_params = char_cfg["data"]["n_params"]
     samples_per_day = resolve_samples_per_day(char_cfg)
-    noise_std = char_cfg["augmentation"]["noise_std"]
+    noise_config = resolve_noise_config(char_cfg)
 
     # Load models
     print("Loading characterizer...")
@@ -869,17 +871,22 @@ def main(argv=None):
 
     # --- Plot 1: LC Reconstruction ---
     print("\nApplying current phenomenological augmentation to the test set (new diagnostic corruption)...")
-    x_test_aug, x_test_retained_mask = apply_lsst_pipeline(
+    x_test_aug, x_test_retained_mask = apply_augmentation(
         x_test_clean,
         n_days,
-        noise_std,
+        noise_config,
         samples_per_day=samples_per_day,
         masking_config=resolve_masking_config(char_cfg),
-        rng=np.random.default_rng(args.lsst_seed),
+        seed=args.lsst_seed,
     )
 
     (output_dir / "augmentation_metadata.json").write_text(json.dumps({
         "view_configuration": view_configuration(char_cfg),
+        "augmentation": augmentation_record(x_test_clean, noise_config, args.lsst_seed),
+        "clean_input_digest": array_digest(x_test_clean),
+        "input_scope": "complete_test_fold_in_persisted_row_order",
+        "preprocessing_directory": str(Path(args.prep).expanduser().resolve()),
+        "fold": diagnostic_fold,
         "seed": args.lsst_seed, "purpose": "new_diagnostic_corruption",
         "historical_mask_reproduction": False,
     }, indent=2) + "\n", encoding="utf-8")

@@ -17,7 +17,10 @@ from sklearn.preprocessing import StandardScaler
 import yaml
 
 from astrai.utils.array_dtypes import as_model_array
-from astrai.utils.masking import view_configuration
+from astrai.utils.augmentation_configuration import view_configuration
+from astrai.utils.augmentation import augmentation_record
+from astrai.utils.noise_configuration import resolve_noise_config
+from astrai.utils.reproducibility import build_pool_preprocessing_seed_plan, build_augmentation_seed_plan
 from astrai.utils.partitions import Partition
 from astrai.utils.target_transformations import (
     PREPROCESSING_ARTEFACT_SCHEMA_VERSION, target_transform_contract,
@@ -87,7 +90,11 @@ class PreprocessingBundle:
 
     def transform_curves(self, clean_or_augmented):
         """Transform any permitted view without changing learned state."""
-        return as_model_array(self.pca.transform(self.x_scaler.transform(clean_or_augmented)))
+        with np.errstate(over="ignore", invalid="ignore"):
+            result = as_model_array(self.pca.transform(self.x_scaler.transform(clean_or_augmented)))
+        if not np.isfinite(result).all():
+            raise ValueError("Transformed curves must be representable as finite float32 values")
+        return result
 
     def transform_parameters(self, transformed):
         return as_model_array(self.y_scaler.transform(transformed))
@@ -182,7 +189,8 @@ def load_training_source(directory, cfg):
         raise ValueError("Training requires pool-specific preprocessing; regenerate artefacts")
     metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
     if metadata.get("preprocessing_artefact_schema_version") != PREPROCESSING_ARTEFACT_SCHEMA_VERSION or metadata.get("run", {}).get("status") != "completed":
-        raise ValueError("Training requires completed schema 7 preprocessing; regenerate artefacts")
+        raise ValueError(f"Training requires completed schema {PREPROCESSING_ARTEFACT_SCHEMA_VERSION} "
+                         "preprocessing; regenerate artefacts")
     for name in ("x_raw.npy", "y_physical.npy", "y_transformed.npy"):
         path = directory / name
         expected_digest = metadata.get("array_artefacts", {}).get(name, {}).get("sha256")
@@ -203,6 +211,12 @@ def load_training_source(directory, cfg):
     plan = yaml.safe_load((directory / "partitions.yaml").read_text(encoding="utf-8"))
     fraction = resolve_validation_fraction(cfg)
     settings = cfg["preprocessing"]
+    parent_seeds = build_pool_preprocessing_seed_plan(settings["random_seed"], settings["n_splits"])
+    noise = resolve_noise_config(cfg)
+    expected_seeds = {key: build_augmentation_seed_plan(seed, modern=noise.modern)
+                      for key, seed in parent_seeds["augmentation"].items()}
+    if metadata.get("augmentation_seed_plans") != expected_seeds:
+        raise ValueError("Augmentation seed provenance differs from the configured plan")
     if (plan.get("schema_version") != 1 or plan.get("dataset_id") != data_id
             or plan.get("protocol") != "holdout_validation"
             or plan.get("validation_fraction") != fraction
@@ -226,6 +240,11 @@ def load_training_source(directory, cfg):
 def load_training_fold(directory, cfg, fold, source):
     """Load one verified bundle; reject swapped arrays and index mappings."""
     partition = source["partitions"][fold - 1]
+    augmentation_seed = source["metadata"]["augmentation_seed_plans"][f"fold_{fold}"]["augmentation_seed"]
+    expected_augmentation = augmentation_record(
+        source["curves"][partition.indices("training")], resolve_noise_config(cfg), augmentation_seed)
+    if source["metadata"].get("bundles", {}).get(f"fold_{fold}", {}).get("augmentation") != expected_augmentation:
+        raise ValueError("Fold augmentation provenance differs from its training inputs")
     fold_dir = Path(directory) / f"fold_{fold}"
     for name, role in (("train_idx", "pool"), ("training_idx", "training"),
                        ("validation_idx", "validation"), ("test_idx", "test")):

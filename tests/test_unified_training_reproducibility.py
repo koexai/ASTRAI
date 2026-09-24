@@ -34,7 +34,7 @@ class UnifiedTrainingReproducibilityTests(unittest.TestCase):
                 "n_splits": 2,
                 "random_seed": 42,
             },
-            "augmentation": {"noise_std": 0.05},
+            "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": 0.05}},
             "loss": {"alpha_char": 1.0, "alpha_gen": 1.0},
             "checkpoint": {},
         }

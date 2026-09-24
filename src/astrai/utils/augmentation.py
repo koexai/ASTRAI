@@ -1,7 +1,7 @@
 """
 astrai.augmentation - Data augmentation pipeline for light-curve training.
 
-Combines the historical additive noise with phenomenological missing-data
+Combines explicit modern or historical noise with phenomenological missing-data
 masks and interpolation in log10 bolometric luminosity. No survey cadence
 or detector geometry is simulated.
 """
@@ -11,6 +11,8 @@ import numpy as np
 from astrai.utils.masking import (
     MaskingConfig, build_time_axis, generate_masking, interpolate_observations,
 )
+from astrai.utils.noise_configuration import NoiseConfig
+from astrai.utils.reproducibility import build_augmentation_seed_plan, make_augmentation_rngs
 
 
 _MAX_POSITIVE_NOISE_DRAWS = 128
@@ -220,7 +222,7 @@ def add_gaussian_noise(x, noise_std, rng=None):
     """Add Gaussian noise using a tiled pseudo-random vector (fast variant).
 
     Deprecated: retained unchanged for historical reproduction and backwards
-    compatibility, including its use by the current augmentation pipeline.
+    compatibility. The configured legacy recipe calls this function directly.
     New direct callers should use the explicit luminosity kernels above.
     No runtime deprecation warning is emitted.
 
@@ -314,27 +316,62 @@ def add_exp_gaussian_log_noise(
     return np.log(y_noisy), np.log(y + std) - np.log(y - std)
 
 
-def apply_lsst_pipeline(
-    curves_batch,
-    n_days,
-    noise_std,
-    samples_per_day=None,
-    rng=None,
-    *,
-    masking_config=None,
-):
-    """Perturb curves and interpolate phenomenologically retained observations.
+def apply_noise(curves, noise_config, *, rng):
+    """Apply one resolved recipe before masking, without modifying the input.
 
-    The historical function name and (curves, boolean retained_mask) return
-    contract remain supported. ``n_days`` is the number of time samples, not
-    the duration. Masking is specified by ``MaskingConfig`` or a parameter
-    mapping; omitted parameters use its documented defaults. The legacy noise
-    path and shared local RNG are unchanged. Outputs are converted to float32
-    by model/preprocessing callers as before.
+    Only the ASTRAI heteroscedastic adapter excludes exact zeros. This temporary
+    technical workaround assigns no scientific meaning to them. It consumes
+    no noise draws for excluded elements; subsequent interpolation is unchanged.
+    The standalone mathematical kernel and all historical APIs remain intact.
+    """
+    config = NoiseConfig.from_mapping(noise_config)
+    values = _noise_inputs(curves, rng)
+    parameters = dict(config.parameters)
+    if config.model == "iid_log10":
+        result = add_iid_gaussian_noise_in_log10_luminosity(values, rng=rng, **parameters)
+    elif config.model == "heteroscedastic_normalised":
+        selected = values != 0
+        # Boolean indexing traverses the batch in row-major order. Passing even
+        # an empty selection preserves kernel validation without consuming RNG.
+        result = values.copy()
+        result[selected] = add_heteroscedastic_noise_in_normalised_luminosity(
+            values[selected], rng=rng, **parameters)
+    elif config.model == "legacy_iid_gaussian":
+        result = add_gaussian_noise_slow(values, rng=rng, **parameters)
+    elif config.model == "legacy_tiled_gaussian":
+        if values.ndim != 2:
+            raise ValueError("legacy_tiled_gaussian requires a two-dimensional batch")
+        result = values.copy() if len(values) == 0 else add_gaussian_noise(values, rng=rng, **parameters)
+    else:
+        result, _ = add_exp_gaussian_log_noise(values, rng=rng, **parameters)
+    if not np.isfinite(result).all():
+        raise ValueError(f"Noise recipe {config.model} produced non-finite luminosities")
+    return result
 
-    Zero observations raise an error identifying the batch row; one produces
-    a constant curve. Two or more use linear interpolation in log10 luminosity
-    with constant edges. Hidden values never fill gaps and masks are not redrawn.
+
+def augmentation_record(curves, noise_config, seed):
+    """Describe the exact recipe, RNG plan and any temporary zero exclusions."""
+    config = NoiseConfig.from_mapping(noise_config)
+    values = np.asarray(curves)
+    return {
+        "noise": config.record(),
+        "rng": build_augmentation_seed_plan(seed, modern=config.modern),
+        "input_shape": list(values.shape),
+        "element_order": "row_major",
+        "excluded_zero_count": (int(np.count_nonzero(values == 0))
+                                if config.model == "heteroscedastic_normalised" else 0),
+    }
+
+
+def apply_augmentation(curves_batch, n_days, noise_config, *, seed,
+                       samples_per_day=None, masking_config=None):
+    """Apply configured noise, masking and log10 interpolation, in that order.
+
+    Returns (float64 curves, boolean retained mask). Modern noise and masking
+    use independent versioned streams; legacy recipes share the original
+    augmentation stream. Same context, row order, horizon and masking recipe
+    give the same modern masks regardless of noise parameters or resampling.
+    Individual noise draws need not survive batch regrouping.
     """
     raw = np.asarray(curves_batch)
     if raw.ndim != 2 or raw.dtype.kind not in "iuf" or not np.isfinite(raw).all():
@@ -342,16 +379,20 @@ def apply_lsst_pipeline(
     calendar = build_time_axis(n_days, samples_per_day)
     if raw.shape[1] != len(calendar):
         raise ValueError("n_days must match the number of curve samples")
-    config = MaskingConfig.from_mapping(masking_config)
-    rng = np.random.default_rng() if rng is None else rng
-    if len(raw) == 0:
-        return raw.astype(np.float64, copy=True), np.zeros(raw.shape, dtype=bool)
-    augmented = add_gaussian_noise(raw.astype(np.float64, copy=True), noise_std, rng=rng)
-    retained_mask = np.zeros(raw.shape, dtype=bool)
+    noise = NoiseConfig.from_mapping(noise_config)
+    masking = MaskingConfig.from_mapping(masking_config)
+    noise_rng, masking_rng = make_augmentation_rngs(
+        build_augmentation_seed_plan(seed, modern=noise.modern))
+    augmented = apply_noise(raw, noise, rng=noise_rng)
+    retained = np.zeros(raw.shape, dtype=bool)
     for row, curve in enumerate(augmented):
-        mask = generate_masking(calendar, config, rng)["retained_mask"]
+        mask = generate_masking(calendar, masking, masking_rng)["retained_mask"]
         if not mask.any():
             raise ValueError(f"No observations retained for curve {row}; the mask is not resampled")
-        retained_mask[row] = mask
+        retained[row] = mask
         augmented[row] = interpolate_observations(curve, mask, calendar)
-    return augmented, retained_mask
+    return augmented, retained
+
+
+# Historical public name, with the same explicit configuration contract.
+apply_lsst_pipeline = apply_augmentation

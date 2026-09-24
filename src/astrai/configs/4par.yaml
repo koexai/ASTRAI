@@ -35,7 +35,10 @@ loss:
   alpha_gen: 1.0
 
 augmentation:
-  noise_std: 0.05
+  # Empirical operational baseline; not a calibrated observation model.
+  noise:
+    model: iid_log10
+    sigma_dex: 0.05
   # Phenomenological availability; no survey cadence or geometry.
   masking:
     annual_period_days: 365.25

@@ -22,8 +22,10 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from astrai.utils.augmentation import apply_lsst_pipeline
-from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day, view_configuration
+from astrai.utils.augmentation import apply_augmentation, augmentation_record
+from astrai.utils.noise_configuration import resolve_noise_config
+from astrai.utils.augmentation_configuration import view_configuration
+from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.array_dtypes import (
     INDEX_ARRAY_DTYPE,
     MODEL_ARRAY_DTYPE,
@@ -35,7 +37,7 @@ from astrai.utils.data import load_raw_data
 from astrai.utils.log_experiments import save_code
 from astrai.utils.reproducibility import (
     build_pool_preprocessing_seed_plan,
-    make_numpy_rng,
+    build_augmentation_seed_plan,
 )
 from astrai.utils.runtime_environment import capture_runtime_environment
 from astrai.utils.target_transformations import (
@@ -212,6 +214,11 @@ def _initial_metadata(cfg, started_at, repository_root):
     )
     return {
         "preprocessing_artefact_schema_version": _ARTEFACT_SCHEMA_VERSION,
+        "view_configuration": view_configuration(cfg),
+        "augmentation_seed_plans": {
+            key: build_augmentation_seed_plan(seed, modern=resolve_noise_config(cfg).modern)
+            for key, seed in seed_plan["augmentation"].items()
+        },
         "run": {
             "status": "running",
             "started_at_utc": started_at.isoformat(),
@@ -238,7 +245,7 @@ def _initial_metadata(cfg, started_at, repository_root):
 
 
 def _process_fold(fold_idx, x_raw, y_physical, y_transformed, partition,
-                  bundle, n_days, noise_std, samples_per_day, out_dir,
+                  bundle, n_days, noise_config, samples_per_day, out_dir,
                   augmentation_seed, masking_config=None):
     """Materialise clean/augmented training and clean validation/test views."""
     fold_dir = Path(out_dir) / f"fold_{fold_idx}"
@@ -251,9 +258,9 @@ def _process_fold(fold_idx, x_raw, y_physical, y_transformed, partition,
     train = partition.indices("training")
     validation = partition.indices("validation")
     test = partition.indices("test")
-    augmented, _ = apply_lsst_pipeline(
-        x_raw[train], n_days, noise_std, samples_per_day=samples_per_day,
-        rng=make_numpy_rng(augmentation_seed), masking_config=masking_config,
+    augmented, _ = apply_augmentation(
+        x_raw[train], n_days, noise_config, samples_per_day=samples_per_day,
+        seed=augmentation_seed, masking_config=masking_config,
     )
     arrays = {
         "x_train_clean_pca.npy": bundle.transform_curves(x_raw[train]),
@@ -270,11 +277,13 @@ def _process_fold(fold_idx, x_raw, y_physical, y_transformed, partition,
     for filename, values in arrays.items():
         _save_model_array(fold_dir / filename, values)
     return {"bundle": f"fold_{fold_idx}/bundle.yaml",
-            "bundle_id": bundle.manifest["bundle_id"]}
+            "bundle_id": bundle.manifest["bundle_id"],
+            "augmentation": augmentation_record(x_raw[train], noise_config, augmentation_seed)}
 
 
 def _generate_preprocessing_artefacts(cfg, out_dir):
     """Build shared partitions before any learned preprocessing is fitted."""
+    noise_config = resolve_noise_config(cfg)
     n_days = cfg["data"]["n_days"]
     n_pca = cfg["preprocessing"]["pca_components"]
     n_splits = cfg["preprocessing"]["n_splits"]
@@ -320,7 +329,7 @@ def _generate_preprocessing_artefacts(cfg, out_dir):
             cfg, data_id=data_id)
         bundles[f"fold_{fold}"] = _process_fold(
             fold, x_raw, y_physical, y_transformed, partition, bundle,
-            n_days, cfg["augmentation"]["noise_std"],
+            n_days, noise_config,
             resolve_samples_per_day(cfg), out_dir,
             seed_plan["augmentation"][f"fold_{fold}"], resolve_masking_config(cfg))
     return {"dataset": {"id": data_id, "sample_identity": "canonical_row_index",

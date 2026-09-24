@@ -36,7 +36,7 @@ class PoolTrainingSmokeTests(unittest.TestCase):
                              "param_names": ["Mass", "Energy"]},
                     "preprocessing": {"n_splits": 3, "random_seed": 42, "pca_components": 2},
                     "partitioning": {"validation_fraction": 0.2, "selection_folds": 3},
-                    "augmentation": {"noise_std": 0.05},
+                    "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": 0.05}},
                     **{stage: {"model": copy.deepcopy(model), "training": copy.deepcopy(training),
                                "checkpoint": copy.deepcopy(checkpoint)}
                        for stage in ("characterizer", "generator")}}
@@ -147,6 +147,11 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         diagnostic = json.loads((output / "augmentation_metadata.json").read_text())
         self.assertFalse(diagnostic["historical_mask_reproduction"])
         self.assertEqual(diagnostic["view_configuration"], self.metadata(prep)["view_configuration"])
+        self.assertEqual(diagnostic["augmentation"]["rng"]["policy"], "independent_noise_masking")
+        self.assertEqual(diagnostic["augmentation"]["rng"]["policy_version"], 1)
+        from astrai.utils.preprocessing import array_digest
+        self.assertEqual(diagnostic["clean_input_digest"],
+                         array_digest(np.load(prep / "fold_1/x_test_clean.npy")))
 
     def test_masking_recipe_mismatch_is_rejected_before_training(self):
         prep = self.prepare()
@@ -163,15 +168,69 @@ class PoolTrainingSmokeTests(unittest.TestCase):
 
     def test_explicit_defaults_and_recorded_recipe_are_equivalent(self):
         from dataclasses import asdict
-        from astrai.utils.masking import MaskingConfig, view_configuration
+        from astrai.utils.masking import MaskingConfig
+        from astrai.utils.augmentation_configuration import view_configuration
         prep = self.prepare()
         explicit = copy.deepcopy(self.cfg)
         explicit["augmentation"]["masking"] = asdict(MaskingConfig())
         source = load_training_source(prep, explicit)
         self.assertEqual(source["metadata"]["view_configuration"], view_configuration(explicit))
 
+    def test_noise_recipe_and_rng_provenance_mismatches_are_rejected(self):
+        prep = self.prepare()
+        changed = copy.deepcopy(self.cfg)
+        changed["augmentation"]["noise"] = {"model": "legacy_iid_gaussian", "noise_std": .05}
+        with self.assertRaisesRegex(ValueError, "Augmentation configuration differs"):
+            load_training_source(prep, changed)
+        path = prep / "metadata.yaml"
+        original = self.metadata(prep)
+        for key in ("noise", "masking", "policy_version"):
+            metadata = copy.deepcopy(original)
+            metadata["augmentation_seed_plans"]["fold_1"][key] += 1
+            path.write_text(yaml.safe_dump(metadata))
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "seed provenance"):
+                load_training_source(prep, self.cfg)
+        metadata = copy.deepcopy(original)
+        metadata["view_configuration"]["noise"]["zero_treatment"] = "unknown"
+        path.write_text(yaml.safe_dump(metadata))
+        with self.assertRaisesRegex(ValueError, "Augmentation configuration differs"):
+            load_training_source(prep, self.cfg)
+
+    def test_zero_exclusion_count_is_associated_with_training_rows(self):
+        self.curves[:, :2] = 0
+        self.cfg["augmentation"]["noise"] = {
+            "model": "heteroscedastic_normalised", "a": .01, "b": .0004}
+        prep = self.prepare()
+        source = load_training_source(prep, self.cfg)
+        partition, _ = load_training_fold(prep, self.cfg, 1, source)
+        record = source["metadata"]["bundles"]["fold_1"]["augmentation"]
+        self.assertEqual(record["excluded_zero_count"], 2 * len(partition.training))
+        record["excluded_zero_count"] += 1
+        with self.assertRaisesRegex(ValueError, "augmentation provenance"):
+            load_training_fold(prep, self.cfg, 1, source)
+
+    def test_changed_noise_leaves_clean_fit_and_generator_targets_unchanged(self):
+        first = self.prepare()
+        changed = copy.deepcopy(self.cfg)
+        changed["augmentation"]["noise"] = {
+            "model": "heteroscedastic_normalised", "a": .01, "b": .0004}
+        second = self.prepare(changed, "different_noise")
+        bundles = []
+        for path, cfg in ((first, self.cfg), (second, changed)):
+            source = load_training_source(path, cfg)
+            partition, bundle = load_training_fold(path, cfg, 1, source)
+            bundles.append(bundle)
+        self.assertEqual(bundles[0].manifest["bundle_id"], bundles[1].manifest["bundle_id"])
+        for filename in ("training_idx.npy", "validation_idx.npy", "test_idx.npy",
+                         "x_train_clean_pca.npy", "y_train_scaled.npy",
+                         "x_validation_pca.npy", "x_test_pca.npy"):
+            np.testing.assert_array_equal(np.load(first / "fold_1" / filename),
+                                          np.load(second / "fold_1" / filename))
+        self.assertFalse(np.array_equal(np.load(first / "fold_1/x_train_aug_pca.npy"),
+                                       np.load(second / "fold_1/x_train_aug_pca.npy")))
+
     def test_1601_point_split_and_unified_smoke(self):
-        from astrai.utils.masking import view_configuration
+        from astrai.utils.augmentation_configuration import view_configuration
         self.curves = np.random.default_rng(14).uniform(40, 44, (18, 1601)).astype(np.float32)
         self.cfg["data"].update(n_days=1601, samples_per_day=4)
         # A non-default recipe verifies forwarding through both workflows.
@@ -183,6 +242,69 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.test_unified_training_records_pool_and_reloads()
         self.assertEqual(self.metadata(self.root / "unified")["view_configuration"],
                          view_configuration(self.cfg))
+
+    def test_all_noise_modes_train_reload_and_preserve_shared_views(self):
+        from astrai.utils.augmentation import apply_augmentation
+        from astrai.utils.noise_configuration import resolve_noise_config
+        cases = [
+            ({"model": "iid_log10", "sigma_dex": .05}, 421, 1),
+            ({"model": "heteroscedastic_normalised", "a": .01, "b": .0004}, 421, 1),
+            ({"model": "legacy_iid_gaussian", "noise_std": .05}, 421, 1),
+            ({"model": "legacy_tiled_gaussian", "noise_std": .05}, 421, 1),
+            ({"model": "legacy_exp_sqrt_gaussian", "sigma": .05}, 421, 1),
+            ({"model": "heteroscedastic_normalised", "a": .01, "b": .0004}, 1601, 4),
+        ]
+        root = self.root
+        for noise, size, rate in cases:
+            with self.subTest(model=noise["model"], size=size):
+                self.root = root / f"{noise['model']}_{size}"
+                self.root.mkdir()
+                self.curves = np.random.default_rng(14).uniform(38, 44, (18, size)).astype(np.float32)
+                self.curves[:, :2] = 0
+                self.cfg["data"].update(n_days=size, samples_per_day=rate)
+                self.cfg["augmentation"]["noise"] = noise
+                prep = self.prepare()
+                char, gen = self.run_pair(prep)
+                self.test_unified_training_records_pool_and_reloads()
+                unified = self.root / "unified"
+                source = load_training_source(prep, self.cfg)
+                partition, bundle = load_training_fold(prep, self.cfg, 1, source)
+                record = source["metadata"]["bundles"]["fold_1"]["augmentation"]
+                self.assertEqual(self.metadata(unified)["augmentation"]["fold_1"], record)
+                for path, loader in ((char, load_characterizer), (gen, load_generator)):
+                    loader(self.cfg, torch.device("cpu"), path)
+                    metadata = self.metadata(path)
+                    self.assertEqual(metadata["view_configuration"], source["metadata"]["view_configuration"])
+                    snapshot = yaml.safe_load((path / "preprocessing_metadata.yaml").read_text())
+                    self.assertEqual(snapshot["bundles"]["fold_1"]["augmentation"], record)
+                noisy, _ = apply_augmentation(self.curves[partition.indices("training")], size,
+                    resolve_noise_config(self.cfg), seed=record["rng"]["augmentation_seed"], samples_per_day=rate)
+                np.testing.assert_array_equal(np.load(prep / "fold_1/x_train_aug_pca.npy"),
+                                              bundle.transform_curves(noisy))
+                self.assertEqual(record["rng"]["policy_version"], 1)
+        self.root = root
+
+    def test_nonrepresentable_noise_fails_at_model_array_boundary(self):
+        from astrai.utils.augmentation import apply_noise
+        prep = self.prepare()
+        source = load_training_source(prep, self.cfg)
+        partition, bundle = load_training_fold(prep, self.cfg, 1, source)
+        noisy = apply_noise(self.curves[partition.indices("training")],
+                            {"model": "iid_log10", "sigma_dex": 1e40}, rng=np.random.default_rng(42))
+        self.assertTrue(np.isfinite(noisy).all())
+        with self.assertRaisesRegex(ValueError, "float32"):
+            bundle.transform_curves(noisy)
+
+    def test_failed_augmentation_keeps_resolved_recipe_and_seed_plan(self):
+        self.cfg["augmentation"]["noise"] = {
+            "model": "heteroscedastic_normalised", "a": .01, "b": .0004}
+        self.cfg["augmentation"]["masking"] = {"cloudy_fraction": 1}
+        with self.assertRaisesRegex(ValueError, "No observations"):
+            self.prepare()
+        metadata = self.metadata(self.root / "prep")
+        self.assertEqual(metadata["run"]["status"], "failed")
+        self.assertEqual(metadata["view_configuration"]["noise"]["model"], "heteroscedastic_normalised")
+        self.assertEqual(metadata["augmentation_seed_plans"]["fold_1"]["policy_version"], 1)
 
 
 if __name__ == "__main__":

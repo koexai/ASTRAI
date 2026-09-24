@@ -144,6 +144,49 @@ def make_numpy_rng(seed):
     return np.random.default_rng(validate_seed(seed))
 
 
+# An augmentation sub-policy, independent of the existing fold/role seed plans.
+# Existing PCA, partition, model and DataLoader namespaces are unchanged.
+AUGMENTATION_SEED_POLICY_VERSION = 1
+_NOISE_STREAM_NAMESPACE = 1
+_MASKING_STREAM_NAMESPACE = 2
+
+
+def augmentation_rng_policy(*, modern):
+    """Identify both stream topology and the derivation used by modern noise."""
+    return {
+        "policy": "independent_noise_masking" if modern else "legacy_shared_noise_masking",
+        "policy_version": AUGMENTATION_SEED_POLICY_VERSION,
+        "derivation": "numpy_seed_sequence_uint32" if modern else "augmentation_seed_direct",
+        "derivation_scheme_version": SEED_SCHEME_VERSION,
+        "bit_generator": "PCG64",
+        "noise_namespace": _NOISE_STREAM_NAMESPACE if modern else None,
+        "masking_namespace": _MASKING_STREAM_NAMESPACE if modern else None,
+    }
+
+
+def build_augmentation_seed_plan(augmentation_seed, *, modern):
+    """Derive only augmentation children; model/parameters do not affect masking."""
+    seed = validate_seed(augmentation_seed, "augmentation seed")
+    return {
+        **augmentation_rng_policy(modern=modern),
+        "augmentation_seed": seed,
+        "noise": derive_seed(seed, _NOISE_STREAM_NAMESPACE) if modern else seed,
+        "masking": derive_seed(seed, _MASKING_STREAM_NAMESPACE) if modern else seed,
+    }
+
+
+def make_augmentation_rngs(seed_plan):
+    """Construct fresh explicit PCG64 streams from a recorded seed plan."""
+    modern = seed_plan.get("policy") == "independent_noise_masking"
+    expected = build_augmentation_seed_plan(seed_plan["augmentation_seed"], modern=modern)
+    if seed_plan != expected:
+        raise ValueError("Unsupported or inconsistent augmentation seed plan")
+    noise = np.random.Generator(np.random.PCG64(seed_plan["noise"]))
+    masking = (np.random.Generator(np.random.PCG64(seed_plan["masking"]))
+               if modern else noise)
+    return noise, masking
+
+
 def derive_diagnostic_seed(base_seed, sample_index):
     """Derive a sample-local seed for reconstruction diagnostics."""
     return derive_seed(
