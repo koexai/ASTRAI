@@ -100,13 +100,6 @@ def build_time_axis(n_samples, samples_per_day=None):
     return times
 
 
-def view_configuration(cfg):
-    """Effective identity of precomputed views, including masking defaults."""
-    return {"noise_std": cfg.get("augmentation", {}).get("noise_std"),
-            "samples_per_day": resolve_samples_per_day(cfg),
-            "masking": resolve_masking_config(cfg).record()}
-
-
 @dataclass(frozen=True)
 class MaskingRealisation:
     config: MaskingConfig

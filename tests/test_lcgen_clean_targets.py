@@ -82,7 +82,7 @@ class LCGenCleanTargetTests(unittest.TestCase):
 
         with mock.patch.object(
             train,
-            "apply_lsst_pipeline",
+            "apply_augmentation",
             return_value=(
                 augmented_curves,
                 np.ones_like(augmented_curves, dtype=bool),
@@ -101,7 +101,7 @@ class LCGenCleanTargetTests(unittest.TestCase):
                 parameters[:2],
                 parameters[2:],
                 n_pca=2,
-                noise_std=0.05,
+                noise_config={"model": "iid_log10", "sigma_dex": .05},
                 n_days=4,
                 samples_per_day=1,
                 fold_idx=1,

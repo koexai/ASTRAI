@@ -34,7 +34,7 @@ def make_config():
             "random_seed": 42,
         },
         "augmentation": {
-            "noise_std": 0.05,
+            "noise": {"model": "iid_log10", "sigma_dex": 0.05},
         },
         "characterizer": {
             "training": {},

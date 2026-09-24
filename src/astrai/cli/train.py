@@ -44,14 +44,14 @@ from astrai.utils.target_transformations import (
     physical_to_transformed,
     scaled_to_transformed,
 )
-from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.augmentation import apply_augmentation, augmentation_record
+from astrai.utils.noise_configuration import resolve_noise_config
 from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.log_experiments import ExperimentRun, summarise_metric_history
 from astrai.utils.reproducibility import (
     build_training_seed_plan,
     build_unified_preprocessing_seed_plan,
     configure_torch_determinism,
-    make_numpy_rng,
 )
 from astrai.utils.training import (
     assert_selected_validation_score,
@@ -85,7 +85,7 @@ def _preprocess_fold(
     y_validation,
     y_test,
     n_pca,
-    noise_std,
+    noise_config,
     n_days,
     samples_per_day,
     fold_idx,
@@ -111,12 +111,12 @@ def _preprocess_fold(
         Test parameters in transformed target space.
     n_pca : int
         Number of PCA components to keep.
-    noise_std : float
-        Standard deviation of Gaussian noise for augmentation.
+    noise_config : NoiseConfig
+        Validated noise recipe for augmentation.
     n_days : int
-        Number of days in the light curve (length of time series).
+        Number of time samples in the light curve.
     samples_per_day : int
-        Number of augmented samples to generate per clean curve.
+        Clean candidate samples per physical day.
     fold_idx : int
         Index of the current fold (for logging purposes).
     augmentation_seed : int
@@ -148,12 +148,12 @@ def _preprocess_fold(
         Fitted PCA object (trained on clean training data).
     """
     print(f"    [Fold {fold_idx}] Applying LSST augmentation...", end="\r")
-    x_train_aug, _ = apply_lsst_pipeline(
+    x_train_aug, _ = apply_augmentation(
         x_train_clean,
         n_days,
-        noise_std,
+        noise_config,
         samples_per_day=samples_per_day,
-        rng=make_numpy_rng(augmentation_seed), masking_config=masking_config,
+        seed=augmentation_seed, masking_config=masking_config,
     )
 
     if bundle is None:
@@ -343,7 +343,7 @@ def _execute_unified_training(cfg, experiment, device):
     )
     samples_per_day = resolve_samples_per_day(cfg)
     n_pca = model_cfg["pca_components"]
-    noise_std = cfg["augmentation"]["noise_std"]
+    noise_config = resolve_noise_config(cfg)
 
     print(f"Loading data on {device}...")
     x_raw, y_physical = load_raw_data(None, cfg)
@@ -428,6 +428,9 @@ def _execute_unified_training(cfg, experiment, device):
         y_validation = y_transformed[validation_global_indices]
         y_test = y_transformed[test_idx]
 
+        experiment.record_augmentation(fold_idx, augmentation_record(
+            x_train_clean, noise_config, preprocessing_seed_plan["augmentation"]))
+
         (
             x_train_combined,
             y_train_combined,
@@ -447,7 +450,7 @@ def _execute_unified_training(cfg, experiment, device):
             y_validation,
             y_test,
             n_pca,
-            noise_std,
+            noise_config,
             n_days,
             samples_per_day,
             fold_idx,

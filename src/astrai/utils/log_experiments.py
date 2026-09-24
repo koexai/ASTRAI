@@ -20,7 +20,7 @@ import numpy as np
 import yaml
 
 from astrai.utils.array_dtypes import INDEX_ARRAY_DTYPE, MODEL_ARRAY_DTYPE
-from astrai.utils.masking import view_configuration
+from astrai.utils.augmentation_configuration import view_configuration
 from astrai.utils.metrics import get_metric_function
 from astrai.utils.runtime_environment import (
     capture_execution_environment,
@@ -33,7 +33,7 @@ from astrai.utils.target_transformations import (
 from astrai.paths import source_checkout_root, source_snapshot_root
 
 
-EXPERIMENT_METADATA_VERSION = 6
+EXPERIMENT_METADATA_VERSION = 7
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -268,6 +268,7 @@ class ExperimentRun:
     ):
         """Create a run, snapshot its inputs and record ``running`` status."""
         target_contract = target_transform_contract(config)
+        views = view_configuration(config)
         if exp_dir is None:
             directory = Path(create_experiment_dir(base_dir=base_dir))
         else:
@@ -300,7 +301,8 @@ class ExperimentRun:
 
         metadata = {
             "experiment_metadata_version": EXPERIMENT_METADATA_VERSION,
-            "view_configuration": view_configuration(config),
+            "view_configuration": views,
+            "augmentation": {},
             "run": {
                 "id": directory.name,
                 "stage": stage,
@@ -536,6 +538,11 @@ class ExperimentRun:
             writer.writeheader()
             writer.writerows(trace)
         return path.relative_to(self.directory).as_posix()
+
+    def record_augmentation(self, fold, record):
+        """Persist in-process augmentation provenance before applying it."""
+        self.metadata["augmentation"][f"fold_{int(fold)}"] = _normalise_metadata(record)
+        self._write_metadata()
 
     def record_fold(
         self,

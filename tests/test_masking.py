@@ -4,9 +4,11 @@ import unittest
 
 import numpy as np
 
+from astrai.utils.augmentation_configuration import view_configuration
+
 from astrai.utils.masking import (
     MaskingConfig, build_time_axis, generate_masking, generate_masking_realisation,
-    interpolate_observations, resolve_samples_per_day, view_configuration,
+    interpolate_observations, resolve_samples_per_day,
 )
 from astrai.utils.lsst import random_cloud_masking, plot_masking_components
 
@@ -20,8 +22,8 @@ class MaskingTests(unittest.TestCase):
         c = MaskingConfig()
         self.assertEqual((c.cloudy_fraction, c.mean_cloudy_days, c.threshold_interval_days), (.3, 2.3, 1))
         self.assertEqual(c.record()['parameters']['seasonal_gap_max_days'], 90)
-        self.assertEqual(view_configuration({}), view_configuration({'augmentation': {'masking': {}}}))
-        self.assertEqual(view_configuration({})['samples_per_day'], 1)
+        self.assertEqual(view_configuration({"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}}}), view_configuration({'augmentation': {'noise': {'model': 'iid_log10', 'sigma_dex': .05}, 'masking': {}}}))
+        self.assertEqual(view_configuration({"augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}}})['samples_per_day'], 1)
 
     def test_invalid_parameters_are_rejected(self):
         for values in [dict(unknown=1), dict(cloudy_fraction=True), dict(cloudy_fraction=1.1),
@@ -202,8 +204,8 @@ class MaskingTests(unittest.TestCase):
         np.testing.assert_array_equal(figure.axes[6].lines[0].get_ydata(), np.diff(observed))
 
     def test_view_identity_captures_changed_masking_and_policy(self):
-        baseline = view_configuration({'augmentation': {'noise_std': .05}})
-        changed = view_configuration({'augmentation': {'noise_std': .05, 'masking': {'cloudy_fraction': .2}}})
+        baseline = view_configuration({'augmentation': {'noise': {'model': 'iid_log10', 'sigma_dex': .05}}})
+        changed = view_configuration({'augmentation': {'noise': {'model': 'iid_log10', 'sigma_dex': .05}, 'masking': {'cloudy_fraction': .2}}})
         self.assertNotEqual(baseline, changed)
         self.assertEqual(baseline['masking']['interpolation']['zero_observations'], 'error')
 

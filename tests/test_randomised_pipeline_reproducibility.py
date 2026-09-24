@@ -40,16 +40,16 @@ class AugmentationReproducibilityTests(unittest.TestCase):
         first = apply_lsst_pipeline(
             curves,
             n_days=421,
-            noise_std=0.05,
+            noise_config={"model": "iid_log10", "sigma_dex": .05},
             samples_per_day=1,
-            rng=np.random.default_rng(123),
+            seed=123,
         )
         repeated = apply_lsst_pipeline(
             curves,
             n_days=421,
-            noise_std=0.05,
+            noise_config={"model": "iid_log10", "sigma_dex": .05},
             samples_per_day=1,
-            rng=np.random.default_rng(123),
+            seed=123,
         )
 
         np.testing.assert_array_equal(first[0], repeated[0])
@@ -64,9 +64,9 @@ class AugmentationReproducibilityTests(unittest.TestCase):
         apply_lsst_pipeline(
             curves,
             n_days=421,
-            noise_std=0.05,
+            noise_config={"model": "iid_log10", "sigma_dex": .05},
             samples_per_day=1,
-            rng=np.random.default_rng(42),
+            seed=42,
         )
 
         self.assertEqual(np.random.random(), expected)
@@ -110,7 +110,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
                 "n_splits": 2,
                 "random_seed": 42,
             },
-            "augmentation": {"noise_std": 0.05},
+            "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": 0.05}},
         }
         x_raw = np.linspace(0.1, 4.8, 8 * 421).reshape(8, 421)
         y_raw = np.linspace(0.1, 1.6, 16).reshape(8, 2)
@@ -164,7 +164,7 @@ class PreprocessingReproducibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 first_metadata["preprocessing_artefact_schema_version"],
-                7,
+                8,
             )
             self.assertEqual(
                 load(first_dir / "fold_1" / "pca.pkl").random_state,

@@ -19,12 +19,13 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from astrai.utils.augmentation import apply_lsst_pipeline
+from astrai.utils.augmentation import apply_augmentation
+from astrai.utils.noise_configuration import resolve_noise_config
 from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.checkpoints import load_unified_model
 from astrai.utils.configuration import load_config
 from astrai.utils.data import load_raw_data
-from astrai.utils.reproducibility import derive_diagnostic_seed, make_numpy_rng
+from astrai.utils.reproducibility import derive_diagnostic_seed
 from astrai.utils.target_transformations import (
     physical_to_transformed,
     scaled_to_physical,
@@ -85,7 +86,7 @@ def plot_single(
     y_scaler,
     pred_params_sc,
     n_days,
-    noise_std,
+    noise_config,
     per_sample_char_rmse,
     samples_per_day=1,
     lsst_seed=42,
@@ -102,7 +103,7 @@ def plot_single(
     y_scaler: StandardScaler for output parameters (for inverse transforming predictions)
     pred_params_sc: predicted parameters in scaled space, shape (n_samples, n_params)
     n_days: number of time samples in the curves
-    noise_std: standard deviation of Gaussian noise for augmentation
+    noise_config: resolved noise recipe
     per_sample_char_rmse: array of characterization RMSE for each sample
     samples_per_day: clean candidate samples per physical day
     lsst_seed: base seed for the sample-local phenomenological augmentation
@@ -113,12 +114,12 @@ def plot_single(
 
     # A new diagnostic corruption, not a historical observing mask.
     print("Applying current phenomenological masking to the diagnostic curve.")
-    augmented_curves, _ = apply_lsst_pipeline(
+    augmented_curves, _ = apply_augmentation(
         x[idx: idx + 1],
         n_days,
-        noise_std,
+        noise_config,
         samples_per_day=samples_per_day,
-        rng=make_numpy_rng(derive_diagnostic_seed(lsst_seed, idx)),
+        seed=derive_diagnostic_seed(lsst_seed, idx),
         masking_config=masking_config,
     )
     augmented_curve = augmented_curves[0]
@@ -265,7 +266,7 @@ def main(argv=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_days = cfg["data"]["n_days"]
-    noise_std = cfg["augmentation"]["noise_std"]
+    noise_config = resolve_noise_config(cfg)
     param_names = cfg["data"]["param_names"]
     samples_per_day = resolve_samples_per_day(cfg)
 
@@ -335,7 +336,7 @@ def main(argv=None):
             y_scaler,
             pred_params_sc,
             n_days,
-            noise_std,
+            noise_config,
             per_sample_char_rmse,
             samples_per_day=samples_per_day,
             lsst_seed=args.lsst_seed,

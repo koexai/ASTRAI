@@ -26,7 +26,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
                 "n_params": 2,
                 "param_names": ["Mass", "Energy"],
             },
-            "augmentation": {"noise_std": 0.05},
+            "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": 0.05}},
             "preprocessing": {
                 "pca_components": 2,
                 "n_splits": 2,
@@ -83,7 +83,7 @@ class SplitTrainingRunReproducibilityTests(unittest.TestCase):
             metadata["reproducibility"]["fold_seed_plans"],
         )
         self.assertEqual(metadata["preprocessing"]["source_run_status"], "completed")
-        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 7)
+        self.assertEqual(metadata["preprocessing"]["artefact_schema_version"], 8)
         self.assertEqual(
             metadata["checkpoint"]["selected_checkpoint"]["outer_fold"],
             1,

@@ -49,6 +49,7 @@ class PreprocessingRunDirectoryTests(unittest.TestCase):
 class PreprocessingRunMetadataTests(unittest.TestCase):
     def setUp(self):
         self.cfg = {
+            "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": .05}},
             "preprocessing": {
                 "pca_components": 3,
                 "n_splits": 2,
@@ -104,7 +105,7 @@ class PreprocessingRunMetadataTests(unittest.TestCase):
             )
             self.assertEqual(
                 metadata["preprocessing_artefact_schema_version"],
-                7,
+                8,
             )
             self.assertEqual(metadata["target_transform"]["name"], "log1p")
             self.assertEqual(metadata["run"]["status"], "completed")
@@ -313,9 +314,9 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
         bundle = fit_preprocessing(x_raw, y_transformed, partition, 2, 123)
         augmented = x_raw[:3].astype(np.float64) + 0.125
         with tempfile.TemporaryDirectory() as temp_dir:
-            with patch.object(preprocess, "apply_lsst_pipeline", return_value=(augmented, np.ones_like(augmented, dtype=bool))):
+            with patch.object(preprocess, "apply_augmentation", return_value=(augmented, np.ones_like(augmented, dtype=bool))):
                 preprocess._process_fold(1, x_raw, y_physical, y_transformed,
-                                         partition, bundle, 4, 0.05, 1, temp_dir, 123)
+                                         partition, bundle, 4, {"model": "iid_log10", "sigma_dex": .05}, 1, temp_dir, 123)
             fold_dir = Path(temp_dir) / "fold_1"
             for path in fold_dir.glob("*.npy"):
                 expected = np.int64 if path.stem.endswith("idx") else np.float32
@@ -327,7 +328,7 @@ class PreprocessingArrayDtypeTests(unittest.TestCase):
     def test_generation_applies_the_target_transform_once(self):
         cfg = {"data": {"target_transform": "log1p", "n_days": 2, "samples_per_day": 1},
                # Two-point fixture tests target conversion, not observability.
-               "augmentation": {"noise_std": 0.05, "masking": {
+               "augmentation": {"noise": {"model": "iid_log10", "sigma_dex": 0.05}, "masking": {
                    "daylight_mean_hours": 0, "daylight_amplitude_hours": 0,
                    "moon_loss_hours": 0, "seasonal_gap_max_days": 0, "cloudy_fraction": 0}},
                "preprocessing": {"pca_components": 1, "n_splits": 2, "random_seed": 42}}
