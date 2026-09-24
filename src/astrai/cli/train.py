@@ -147,7 +147,7 @@ def _preprocess_fold(
     pca : PCA
         Fitted PCA object (trained on clean training data).
     """
-    print(f"    [Fold {fold_idx}] Applying LSST augmentation...", end="\r")
+    print(f"    [Fold {fold_idx}] Applying configured noise and observation masking...", end="\r")
     x_train_aug, _ = apply_augmentation(
         x_train_clean,
         n_days,

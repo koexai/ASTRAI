@@ -15,11 +15,15 @@ Usage::
     astrai visualize-reconstruction --exp experiments/20260306_143000 --top 5
 """
 import argparse
+import json
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from astrai.utils.augmentation import apply_augmentation
+from astrai.utils.augmentation import apply_augmentation, augmentation_record
+from astrai.utils.augmentation_configuration import view_configuration
+from astrai.utils.preprocessing import array_digest
 from astrai.utils.noise_configuration import resolve_noise_config
 from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.checkpoints import load_unified_model
@@ -113,13 +117,14 @@ def plot_single(
     reconstructed_curve = model_reconstructed[idx]
 
     # A new diagnostic corruption, not a historical observing mask.
-    print("Applying current phenomenological masking to the diagnostic curve.")
+    print("Applying configured noise and masking (new diagnostic corruption).")
+    diagnostic_seed = derive_diagnostic_seed(lsst_seed, int(idx))
     augmented_curves, _ = apply_augmentation(
         x[idx: idx + 1],
         n_days,
         noise_config,
         samples_per_day=samples_per_day,
-        seed=derive_diagnostic_seed(lsst_seed, idx),
+        seed=diagnostic_seed,
         masking_config=masking_config,
     )
     augmented_curve = augmented_curves[0]
@@ -219,6 +224,16 @@ def plot_single(
     axes[2].legend()
 
     plt.tight_layout()
+    return fig, {
+        "purpose": "new_diagnostic_corruption",
+        "historical_mask_reproduction": False,
+        "base_seed": lsst_seed,
+        "sample_index": int(idx),
+        "sample_seed": diagnostic_seed,
+        "input_scope": "single_canonical_dataset_row",
+        "clean_input_digest": array_digest(x[idx:idx + 1]),
+        "augmentation": augmentation_record(x[idx:idx + 1], noise_config, diagnostic_seed),
+    }
 
 
 def main(argv=None):
@@ -258,6 +273,10 @@ def main(argv=None):
         type=int,
         default=42,
         help="Base seed for reproducible phenomenological diagnostic augmentation",
+    )
+    parser.add_argument(
+        "--output-dir", default="plots/reconstruction",
+        help="Directory for figures and diagnostic augmentation metadata",
     )
     args = parser.parse_args(argv)
     config_path = resolve_config_path(args.config, "default.yaml")
@@ -324,8 +343,10 @@ def main(argv=None):
         idx = args.index if args.index is not None else 0
         indices_to_plot = [idx]
 
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
     for idx in indices_to_plot:
-        plot_single(
+        figure, record = plot_single(
             idx,
             x,
             y_physical,
@@ -342,6 +363,12 @@ def main(argv=None):
             lsst_seed=args.lsst_seed,
             masking_config=resolve_masking_config(cfg),
         )
+        record["view_configuration"] = view_configuration(cfg)
+        record["experiment_directory"] = None if args.exp is None else str(Path(args.exp).expanduser().resolve())
+        figure.savefig(output_dir / f"reconstruction_{idx}.pdf")
+        metadata_path = output_dir / f"augmentation_metadata_{idx}.json"
+        metadata_path.write_text(json.dumps(record, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        print(f"Diagnostic augmentation metadata: {metadata_path}")
 
     plt.show()
 

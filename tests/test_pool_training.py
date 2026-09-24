@@ -147,6 +147,11 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         diagnostic = json.loads((output / "augmentation_metadata.json").read_text())
         self.assertFalse(diagnostic["historical_mask_reproduction"])
         self.assertEqual(diagnostic["view_configuration"], self.metadata(prep)["view_configuration"])
+        self.assertEqual(diagnostic["augmentation"]["rng"]["policy"], "independent_noise_masking")
+        self.assertEqual(diagnostic["augmentation"]["rng"]["policy_version"], 1)
+        from astrai.utils.preprocessing import array_digest
+        self.assertEqual(diagnostic["clean_input_digest"],
+                         array_digest(np.load(prep / "fold_1/x_test_clean.npy")))
 
     def test_masking_recipe_mismatch_is_rejected_before_training(self):
         prep = self.prepare()

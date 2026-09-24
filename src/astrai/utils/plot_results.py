@@ -21,7 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from astrai.utils.augmentation import apply_augmentation
+from astrai.utils.augmentation import apply_augmentation, augmentation_record
+from astrai.utils.preprocessing import array_digest
 from astrai.utils.noise_configuration import resolve_noise_config
 from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.augmentation_configuration import view_configuration
@@ -881,6 +882,11 @@ def main(argv=None):
 
     (output_dir / "augmentation_metadata.json").write_text(json.dumps({
         "view_configuration": view_configuration(char_cfg),
+        "augmentation": augmentation_record(x_test_clean, noise_config, args.lsst_seed),
+        "clean_input_digest": array_digest(x_test_clean),
+        "input_scope": "complete_test_fold_in_persisted_row_order",
+        "preprocessing_directory": str(Path(args.prep).expanduser().resolve()),
+        "fold": diagnostic_fold,
         "seed": args.lsst_seed, "purpose": "new_diagnostic_corruption",
         "historical_mask_reproduction": False,
     }, indent=2) + "\n", encoding="utf-8")
