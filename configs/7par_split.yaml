@@ -1,0 +1,88 @@
+data:
+  target_transform: log1p
+  format: parquet
+  path: data/dataset_preprocessed.parquet
+  n_days: 1601
+  n_params: 7
+  param_names: [Raggio, Massa, Energia, Nickel, Mcsm, Rcsm, Slope]
+  samples_per_day: 4
+
+# Shared sample partitions (holdout training remains the executable protocol).
+partitioning:
+  validation_fraction: 0.1
+  # Optional selection_folds: K_select for BOTH outer and final selection plans.
+  # This creates partitions only; it does not execute budget selection/refits.
+
+# Shared preprocessing
+preprocessing:
+  pca_components: 32
+  n_splits: 2
+  # Single base seed; stage-specific and fold-specific seeds are derived.
+  random_seed: 42
+
+augmentation:
+  # Empirical operational baseline; not a calibrated observation model.
+  noise:
+    model: iid_log10
+    sigma_dex: 0.05
+  # Phenomenological availability; no survey cadence or geometry.
+  masking:
+    annual_period_days: 365.25
+    daylight_mean_hours: 12.0
+    daylight_amplitude_hours: 2.0
+    seasonal_gap_min_days: 0.0
+    seasonal_gap_max_days: 90.0
+    moon_period_days: 29.53
+    moon_active_days: 9.351166666666668
+    moon_loss_hours: 4.0
+    cloudy_fraction: 0.3
+    mean_cloudy_days: 2.3
+    threshold_interval_days: 1.0
+
+# Independent characterizer: clean + augmented curves -> params (SplitMLPRegressor)
+characterizer:
+  model:
+    width: 512
+    depth: 10
+    dropout: 0.1
+  training:
+    # Use null to run all outer folds, or select one fold reserved for test.
+    test_fold: null
+    batch_size: 4096
+    epochs: 1000
+    learning_rate: 0.001
+    checkpoint_selection:
+      metric: R2
+    early_stopping:
+      enabled: false
+      patience: 100
+      min_delta: 0.0
+  checkpoint:
+    model: best_characterizer.pth
+    x_scaler: best_char_x_scaler.pkl
+    y_scaler: best_char_y_scaler.pkl
+    pca: best_char_pca.pkl
+
+# Independent generator: params -> one clean curve per original (MLPWithResiduals)
+generator:
+  model:
+    width: 512
+    depth: 10
+    dropout: 0.1
+  training:
+    # Use null to run all outer folds, or select one fold reserved for test.
+    test_fold: null
+    batch_size: 4096
+    epochs: 1000
+    learning_rate: 0.001
+    checkpoint_selection:
+      metric: RMSE
+    early_stopping:
+      enabled: false
+      patience: 100
+      min_delta: 0.0
+  checkpoint:
+    model: best_generator.pth
+    x_scaler: best_gen_x_scaler.pkl
+    y_scaler: best_gen_y_scaler.pkl
+    pca: best_gen_pca.pkl

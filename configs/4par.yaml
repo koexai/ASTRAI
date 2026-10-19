@@ -1,3 +1,4 @@
+# Historical Unified configuration for inference; shared training is retired.
 data:
   target_transform: log1p
   format: npy_csv

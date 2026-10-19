@@ -12,10 +12,10 @@ import numpy as np
 import torch
 import yaml
 
-from astrai.cli import preprocess, train, train_characterizer, train_generator
-from astrai.utils.checkpoints import load_characterizer, load_generator, load_unified_model
+from astrai.cli import preprocess, train_characterizer, train_generator
+from astrai.utils.checkpoints import load_characterizer, load_generator
 from astrai.utils.preprocessing import load_training_source, load_training_fold
-from astrai.utils.target_transformations import validate_parameter_scalers
+from astrai.utils.model_pairing import validate_cascade_pair
 
 
 class PoolTrainingSmokeTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.parameters = rng.uniform(0.1, 2, size=(18, 2)).astype(np.float32)
         model = {"width": 4, "depth": 1, "dropout": 0.0}
         # Each outer fold has nine training curves after the shared holdout.
-        # Three divides both LCGen's nine clean pairs and PPReg/Unified's
+        # Three divides both LCGen's nine clean pairs and PPReg's
         # eighteen pairs, avoiding singleton batches in the residual BatchNorm.
         training = {"epochs": 2, "batch_size": 3, "learning_rate": 0.001, "test_fold": 1}
         checkpoint = {"model": "model.pth", "x_scaler": "x.pkl", "y_scaler": "y.pkl", "pca": "pca.pkl"}
@@ -60,7 +60,16 @@ class PoolTrainingSmokeTests(unittest.TestCase):
 
     def test_single_fold_pair_shares_partitions_and_reloads(self):
         prep = self.prepare()
-        char, gen = self.run_pair(prep)
+        with (patch.object(train_characterizer, "build_training_loader", wraps=train_characterizer.build_training_loader) as char_loader,
+              patch.object(train_generator, "build_training_loader", wraps=train_generator.build_training_loader) as gen_loader):
+            char, gen = self.run_pair(prep)
+        clean = np.load(prep / "fold_1/x_train_clean_pca.npy")
+        augmented = np.load(prep / "fold_1/x_train_aug_pca.npy")
+        parameters = np.load(prep / "fold_1/y_train_scaled.npy")
+        np.testing.assert_array_equal(char_loader.call_args.args[0], np.vstack([clean, augmented]))
+        np.testing.assert_array_equal(char_loader.call_args.args[1], np.vstack([parameters, parameters]))
+        np.testing.assert_array_equal(gen_loader.call_args.args[0], parameters)
+        np.testing.assert_array_equal(gen_loader.call_args.args[1], clean)
         char_meta, gen_meta = self.metadata(char), self.metadata(gen)
         for role in ("training", "validation", "test"):
             np.testing.assert_array_equal(np.load(char / "fold_1" / f"{role}_indices.npy"),
@@ -69,7 +78,7 @@ class PoolTrainingSmokeTests(unittest.TestCase):
                          gen_meta["checkpoint"]["selected_checkpoint"]["preprocessing_bundle_id"])
         cm, _, cy, _ = load_characterizer(self.cfg, torch.device("cpu"), char)
         gm, _, gy, _ = load_generator(self.cfg, torch.device("cpu"), gen)
-        validate_parameter_scalers(cy, gy)
+        validate_cascade_pair(char, gen, cy, gy)
         source = load_training_source(prep, self.cfg)
         part, bundle = load_training_fold(prep, self.cfg, 1, source)
         test = part.indices("test")
@@ -79,6 +88,51 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.assertAlmostEqual(char_metrics["transformed"]["aggregate"]["R2"],
                                char_meta["results"]["folds"][0]["metrics"]["test"]["transformed"]["aggregate"]["R2"])
         self.assertEqual(gm.training, False)
+        self.assertEqual(char_meta["checkpoint"]["selection_policy"]["metric"], "R2")
+        self.assertEqual(gen_meta["checkpoint"]["selection_policy"]["metric"], "RMSE")
+        self.assertEqual(gen_meta["checkpoint"]["selection_policy"]["mode"], "min")
+        for metadata in (char_meta, gen_meta):
+            self.assertEqual(metadata["training_contract"]["topology"], "independent_supervised")
+            self.assertEqual(metadata["training_contract"]["optimisation_scope"], "whole_stage")
+            self.assertEqual(metadata["training_contract"]["loss"], "MSE")
+        self.assertEqual(char_meta["training_contract"]["selection_aggregation"], "unweighted_mean_per_parameter")
+        self.assertEqual(gen_meta["training_contract"]["selection_space"], "decoded_clean_light_curves")
+        self.assertEqual(gen_meta["training_contract"]["loss_space"], "PCA_coefficients_of_standardised_clean_curves")
+        with torch.no_grad():
+            predicted = cm(torch.from_numpy(bundle.transform_curves(self.curves[test])))
+            reconstructed = bundle.x_scaler.inverse_transform(bundle.pca.inverse_transform(gm(predicted).numpy()))
+        self.assertEqual(reconstructed.shape, self.curves[test].shape)
+        self.assertTrue(np.isfinite(reconstructed).all())
+
+    def test_generator_is_independent_of_characterizer_training_budget(self):
+        prep = self.prepare()
+        _, first = self.run_pair(prep)
+        changed = copy.deepcopy(self.cfg)
+        changed["characterizer"]["training"]["epochs"] = 3
+        with redirect_stdout(StringIO()):
+            train_characterizer.run_characterizer_training(changed, prep, self.root / "char-longer")
+            second = Path(train_generator.run_generator_training(changed, prep, self.root / "gen-repeat"))
+        before = torch.load(first / "model.pth", weights_only=True, map_location="cpu")
+        after = torch.load(second / "model.pth", weights_only=True, map_location="cpu")
+        for key in before:
+            torch.testing.assert_close(before[key], after[key], rtol=0, atol=0)
+        for key in ("outer_fold", "epoch", "validation_score", "preprocessing_bundle_id"):
+            self.assertEqual(self.metadata(first)["checkpoint"]["selected_checkpoint"][key],
+                             self.metadata(second)["checkpoint"]["selected_checkpoint"][key])
+
+    def test_four_and_seven_parameter_training_and_cascade_smoke(self):
+        root = self.root
+        for n_params, n_days, rate in ((4, 421, 1), (7, 1601, 4)):
+            with self.subTest(n_params=n_params):
+                self.root = root / str(n_params)
+                self.root.mkdir()
+                self.cfg["data"].update(n_params=n_params, n_days=n_days, samples_per_day=rate,
+                                         param_names=[f"P{i}" for i in range(n_params)])
+                rng = np.random.default_rng(14)
+                self.curves = rng.uniform(40, 44, (18, n_days)).astype(np.float32)
+                self.parameters = rng.uniform(.1, 2, (18, n_params)).astype(np.float32)
+                self.test_single_fold_pair_shares_partitions_and_reloads()
+        self.root = root
 
     def test_multifold_checkpoints_keep_their_actual_preprocessing(self):
         cfg = copy.deepcopy(self.cfg)
@@ -92,24 +146,6 @@ class PoolTrainingSmokeTests(unittest.TestCase):
             fold = metadata["checkpoint"]["selected_checkpoint"]["outer_fold"]
             _, _, scaler, _ = loader(cfg, torch.device("cpu"), path)
             np.testing.assert_array_equal(scaler.mean_, joblib.load(prep / f"fold_{fold}" / "y_scaler.pkl").mean_)
-
-    def test_unified_training_records_pool_and_reloads(self):
-        cfg = {"data": self.cfg["data"], "partitioning": self.cfg["partitioning"],
-               "augmentation": self.cfg["augmentation"],
-               "model": {**self.cfg["characterizer"]["model"], "pca_components": 2},
-               "training": {**self.cfg["characterizer"]["training"], "n_splits": 3, "random_seed": 42},
-               "checkpoint": self.cfg["characterizer"]["checkpoint"],
-               "loss": {"alpha_char": 1.0, "alpha_gen": 1.0}}
-        with (patch.object(train, "load_raw_data", return_value=(self.curves, self.parameters)),
-              redirect_stdout(StringIO())):
-            path = Path(train.run_unified_training(cfg, self.root / "unified"))
-        _, _, scaler, _ = load_unified_model(cfg, torch.device("cpu"), path)
-        metadata = self.metadata(path)
-        fold = metadata["checkpoint"]["selected_checkpoint"]["outer_fold"]
-        rows = np.load(path / f"fold_{fold}" / "training_indices.npy")
-        np.testing.assert_allclose(scaler.mean_, np.log1p(self.parameters[rows]).mean(axis=0), atol=1e-7)
-        self.assertTrue((path / "x_raw.npy").is_file())
-        self.assertTrue((path / "partitions.yaml").is_file())
 
     def test_changed_augmentation_does_not_change_clean_fit(self):
         first = self.prepare()
@@ -229,19 +265,16 @@ class PoolTrainingSmokeTests(unittest.TestCase):
         self.assertFalse(np.array_equal(np.load(first / "fold_1/x_train_aug_pca.npy"),
                                        np.load(second / "fold_1/x_train_aug_pca.npy")))
 
-    def test_1601_point_split_and_unified_smoke(self):
+    def test_1601_point_split_smoke(self):
         from astrai.utils.augmentation_configuration import view_configuration
         self.curves = np.random.default_rng(14).uniform(40, 44, (18, 1601)).astype(np.float32)
         self.cfg["data"].update(n_days=1601, samples_per_day=4)
-        # A non-default recipe verifies forwarding through both workflows.
+        # A non-default recipe verifies forwarding through both independent stages.
         self.cfg["augmentation"]["masking"] = {"moon_loss_hours": 2, "cloudy_fraction": .2}
         prep = self.prepare()
         char, gen = self.run_pair(prep)
         for path in (char, gen):
             self.assertEqual(self.metadata(path)["view_configuration"], view_configuration(self.cfg))
-        self.test_unified_training_records_pool_and_reloads()
-        self.assertEqual(self.metadata(self.root / "unified")["view_configuration"],
-                         view_configuration(self.cfg))
 
     def test_all_noise_modes_train_reload_and_preserve_shared_views(self):
         from astrai.utils.augmentation import apply_augmentation
@@ -265,12 +298,9 @@ class PoolTrainingSmokeTests(unittest.TestCase):
                 self.cfg["augmentation"]["noise"] = noise
                 prep = self.prepare()
                 char, gen = self.run_pair(prep)
-                self.test_unified_training_records_pool_and_reloads()
-                unified = self.root / "unified"
                 source = load_training_source(prep, self.cfg)
                 partition, bundle = load_training_fold(prep, self.cfg, 1, source)
                 record = source["metadata"]["bundles"]["fold_1"]["augmentation"]
-                self.assertEqual(self.metadata(unified)["augmentation"]["fold_1"], record)
                 for path, loader in ((char, load_characterizer), (gen, load_generator)):
                     loader(self.cfg, torch.device("cpu"), path)
                     metadata = self.metadata(path)

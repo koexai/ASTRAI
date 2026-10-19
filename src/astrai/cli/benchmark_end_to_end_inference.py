@@ -34,7 +34,7 @@ from astrai.utils.checkpoints import (
     load_generator,
 )
 from astrai.utils.data import load_raw_data
-from astrai.utils.target_transformations import validate_parameter_scalers
+from astrai.utils.model_pairing import validate_cascade_pair
 
 
 def parse_args(argv=None):
@@ -149,11 +149,7 @@ def main(argv=None):
     )
     char_model.eval()
     gen_model.eval()
-    validate_parameter_scalers(
-        char_y_scaler,
-        gen_y_scaler,
-        context="characterizer output and generator input scaling",
-    )
+    validate_cascade_pair(args.exp_char, args.exp_gen, char_y_scaler, gen_y_scaler)
 
     x, _ = load_raw_data(args.data, cfg)
     validate_sample_index(args.sample_index, len(x))

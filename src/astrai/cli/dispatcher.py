@@ -5,9 +5,9 @@ import sys
 
 
 COMMANDS = {
-    "pipeline": ("astrai.cli.main", "Run preprocessing and split training"),
+    "pipeline": ("astrai.cli.main", "Run preprocessing and independent supervised training"),
     "preprocess": ("astrai.cli.preprocess", "Create preprocessing artefacts"),
-    "train": ("astrai.cli.train", "Train the unified model"),
+    "train": ("astrai.cli.train", "Retired shared training; use pipeline"),
     "train-characterizer": (
         "astrai.cli.train_characterizer",
         "Train the split characterizer",

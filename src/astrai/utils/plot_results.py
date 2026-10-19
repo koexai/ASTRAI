@@ -28,6 +28,7 @@ from astrai.utils.masking import resolve_masking_config, resolve_samples_per_day
 from astrai.utils.augmentation_configuration import view_configuration
 from astrai.utils.array_dtypes import as_model_array, load_model_array
 from astrai.utils.checkpoints import load_config, load_characterizer, load_generator
+from astrai.utils.model_pairing import validate_cascade_pair
 from astrai.utils.target_transformations import (
     load_fold_target_array,
     target_transform_contract,
@@ -782,18 +783,12 @@ def main(argv=None):
         device,
         args.exp_gen,
     )
-    validate_shared_parameter_scaling(
-        char_y_scaler,
-        gen_y_scaler,
-    )
-    if getattr(char_y_scaler, "astrai_association", None):
-        from astrai.utils.preprocessing import load_training_source, load_training_fold
-        source = load_training_source(args.prep, char_cfg)
-        _, diagnostic_bundle = load_training_fold(args.prep, char_cfg, diagnostic_fold, source)
-        expected_id = diagnostic_bundle.manifest["bundle_id"]
-        for scaler in (char_y_scaler, gen_y_scaler):
-            if scaler.astrai_association["bundle_id"] != expected_id:
-                raise ValueError("Diagnostic fold and checkpoint preprocessing bundles differ")
+    validate_cascade_pair(args.exp_char, args.exp_gen, char_y_scaler, gen_y_scaler)
+    from astrai.utils.preprocessing import load_training_source, load_training_fold
+    source = load_training_source(args.prep, char_cfg)
+    _, diagnostic_bundle = load_training_fold(args.prep, char_cfg, diagnostic_fold, source)
+    if char_y_scaler.astrai_association["bundle_id"] != diagnostic_bundle.manifest["bundle_id"]:
+        raise ValueError("Diagnostic fold and checkpoint preprocessing bundles differ")
     print("Validated shared PPReg/LCGen parameter scaling.")
 
     # Load test data from chosen fold

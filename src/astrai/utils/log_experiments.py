@@ -33,7 +33,7 @@ from astrai.utils.target_transformations import (
 from astrai.paths import source_checkout_root, source_snapshot_root
 
 
-EXPERIMENT_METADATA_VERSION = 7
+EXPERIMENT_METADATA_VERSION = 8
 _CONFIG_SNAPSHOT_NAME = "config.yaml"
 _CODE_SNAPSHOT_NAME = "code.zip"
 _METADATA_NAME = "metadata.yaml"
@@ -386,6 +386,29 @@ class ExperimentRun:
             },
             "artefacts": {},
         }
+        if stage in {"characterizer", "generator"}:
+            is_characterizer = stage == "characterizer"
+            metadata["training_contract"] = {
+                "topology": "independent_supervised",
+                "optimisation_scope": "whole_stage",
+                "loss": "MSE",
+                "loss_space": (
+                    "standardised_transformed_parameters" if is_characterizer
+                    else "PCA_coefficients_of_standardised_clean_curves"
+                ),
+                "supervision": (
+                    "clean_and_augmented_curves_to_parameters" if is_characterizer
+                    else "parameters_to_one_clean_curve_per_original"
+                ),
+                "selection_space": (
+                    "transformed_parameters" if is_characterizer
+                    else "decoded_clean_light_curves"
+                ),
+                "selection_aggregation": (
+                    "unweighted_mean_per_parameter" if is_characterizer
+                    else "global_all_samples_and_times"
+                ),
+            }
         run = cls(directory, _normalise_metadata(metadata))
         run._write_metadata()
 
