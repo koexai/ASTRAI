@@ -34,7 +34,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("data:", path.read_text(encoding="utf-8"))
 
     def test_packaged_configs_match_source_checkout_configs(self):
-        for filename in ("4par.yaml", "default.yaml", "default_split.yaml"):
+        for filename in ("4par.yaml", "default.yaml", "default_split.yaml", "7par_split.yaml"):
             self.assertEqual(
                 default_config_path(filename).read_bytes(),
                 (REPOSITORY_ROOT / "configs" / filename).read_bytes(),

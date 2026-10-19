@@ -146,6 +146,17 @@ class ModelFactoryTests(unittest.TestCase):
         self._assert_same_state(model, loaded)
         self.assertTrue(all(isinstance(item, MarkerArtefact) for item in artefacts))
         self.assertFalse(loaded.training)
+        model.eval()
+        inputs = torch.ones((2, 3))
+        with torch.no_grad():
+            torch.testing.assert_close(model.regressor(inputs), loaded.regressor(inputs))
+            torch.testing.assert_close(model.generator(model.regressor(inputs)),
+                                       loaded.generator(loaded.regressor(inputs)))
+
+    def test_historical_unified_container_rejects_shared_training(self):
+        model = build_unified_model(self.unified_cfg)
+        with self.assertRaisesRegex(RuntimeError, "retired"):
+            model.fit(None, None, None, None, None)
 
 
 if __name__ == "__main__":

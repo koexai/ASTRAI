@@ -116,7 +116,7 @@ def resolve_test_fold(training_cfg):
     return test_fold if has_test_fold else legacy_fold
 
 
-def resolve_training_control(training_cfg, metric_path):
+def resolve_training_control(training_cfg, metric_path, *, default_metric="R2"):
     """Validate and normalise validation, selection and stopping settings."""
     validation_fraction = training_cfg.get("validation_fraction", 0.1)
     if (
@@ -129,7 +129,7 @@ def resolve_training_control(training_cfg, metric_path):
     selection_cfg = training_cfg.get("checkpoint_selection", {})
     if not isinstance(selection_cfg, dict):
         raise TypeError("training.checkpoint_selection must be a mapping.")
-    metric = selection_cfg.get("metric", "R2")
+    metric = selection_cfg.get("metric", default_metric)
     _, mode = get_metric_function(metric)
 
     stopping_cfg = training_cfg.get("early_stopping", {})
@@ -322,23 +322,9 @@ def record_metric_values(history, metrics):
         values.append(metrics[metric_name])
 
 
-def build_training_loader(
-    inputs,
-    targets,
-    batch_size,
-    seed,
-    *,
-    reconstruction_targets=None,
-):
-    """Create the deterministic DataLoader shared by training stages.
-
-    Unified training supplies explicit clean reconstruction targets as a
-    third tensor. Split training retains the existing two-tensor batches.
-    """
-    tensors = [torch.FloatTensor(inputs), torch.FloatTensor(targets)]
-    if reconstruction_targets is not None:
-        tensors.append(torch.FloatTensor(reconstruction_targets))
-    dataset = TensorDataset(*tensors)
+def build_training_loader(inputs, targets, batch_size, seed):
+    """Create a deterministic loader for one supervised input-target pair."""
+    dataset = TensorDataset(torch.FloatTensor(inputs), torch.FloatTensor(targets))
     return DataLoader(
         dataset,
         batch_size=batch_size,

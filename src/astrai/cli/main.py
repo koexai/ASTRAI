@@ -1,5 +1,5 @@
 """
-main.py - Full pipeline for training (preprocessing + characterizer + generator).
+main.py - Independent supervised training (preprocessing + characterizer + generator).
 
 Creates separate experiment directories for each model, saves code snapshots
 and config, then runs all three stages sequentially.
@@ -30,7 +30,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(
         prog="astrai pipeline",
-        description="ASTRAI split training pipeline"
+        description="ASTRAI independent supervised training pipeline"
     )
     parser.add_argument(
         "--config",

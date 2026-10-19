@@ -191,7 +191,9 @@ def run_generator_training(
     base_seed = cfg["preprocessing"]["random_seed"]
     gen_cfg = cfg["generator"]
     training_cfg = gen_cfg["training"]
-    training_control = resolve_training_control(training_cfg, "R2")
+    training_control = resolve_training_control(
+        training_cfg, "RMSE", default_metric="RMSE"
+    )
     training_control["selection_policy"]["metric_path"] = training_control[
         "selection_policy"
     ]["metric"]

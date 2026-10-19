@@ -102,6 +102,31 @@ class TrainingHelperTests(unittest.TestCase):
         self.assertEqual(optimizer.param_groups[0]["lr"], 0.01)
         self.assertEqual(scheduler.T_max, 3)
 
+    def test_stage_optimisation_does_not_update_the_other_network(self):
+        from astrai.models.factories import build_characterizer, build_generator
+        model_cfg = {"width": 4, "depth": 1, "dropout": 0.0}
+        cfg = {"data": {"n_params": 2}, "preprocessing": {"pca_components": 3},
+               "characterizer": {"model": model_cfg}, "generator": {"model": model_cfg}}
+        for stage in ("characterizer", "generator"):
+            with self.subTest(stage=stage):
+                models = {"characterizer": build_characterizer(cfg), "generator": build_generator(cfg)}
+                components = {name: build_training_components(model, {"learning_rate": .01, "epochs": 1})
+                              for name, model in models.items()}
+                other = "generator" if stage == "characterizer" else "characterizer"
+                before = copy.deepcopy(models[other].state_dict())
+                owned = {id(p) for group in components[stage][0].param_groups for p in group["params"]}
+                self.assertEqual(owned, {id(p) for p in models[stage].parameters()})
+                self.assertTrue(owned.isdisjoint(id(p) for p in models[other].parameters()))
+                input_size, output_size = (3, 2) if stage == "characterizer" else (2, 3)
+                train_supervised_model(models[stage],
+                    [(torch.randn(4, input_size), torch.randn(4, output_size))],
+                    *components[stage], 1, torch.device("cpu"))
+                for key, value in models[other].state_dict().items():
+                    torch.testing.assert_close(value, before[key], rtol=0, atol=0)
+                self.assertTrue(all(p.grad is None for p in models[other].parameters()))
+                self.assertEqual(components[other][0].param_groups[0]["lr"], .01)
+                self.assertIsNot(components[stage][2], components[other][2])
+
     def test_training_loop_matches_the_previous_parameter_updates(self):
         torch.manual_seed(42)
         actual_model = torch.nn.Linear(2, 1)

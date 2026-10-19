@@ -41,7 +41,7 @@ augmentation:
     mean_cloudy_days: 2.3
     threshold_interval_days: 1.0
 
-# Characterizer: curves -> params (SplitMLPRegressor)
+# Independent characterizer: clean + augmented curves -> params (SplitMLPRegressor)
 characterizer:
   model:
     width: 512
@@ -65,7 +65,7 @@ characterizer:
     y_scaler: best_char_y_scaler.pkl
     pca: best_char_pca.pkl
 
-# Generator: params -> curves (MLPWithResiduals)
+# Independent generator: params -> one clean curve per original (MLPWithResiduals)
 generator:
   model:
     width: 512
@@ -78,7 +78,7 @@ generator:
     epochs: 1000
     learning_rate: 0.001
     checkpoint_selection:
-      metric: R2
+      metric: RMSE
     early_stopping:
       enabled: false
       patience: 100

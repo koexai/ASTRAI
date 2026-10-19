@@ -46,12 +46,15 @@ astrai --help
 
 ## Quick Start
 
-### Train (split pipeline, recommended)
+### Train (independent supervised pipeline)
 
-Run preprocessing, characterizer, and generator training in sequence:
+Run shared preprocessing, PPReg characterizer training and LCGen generator training in sequence:
 
 ```bash
+# Four physical parameters (421-point curves):
 astrai pipeline --config configs/default_split.yaml
+# Seven physical parameters (1601-point curves):
+astrai pipeline --config configs/7par_split.yaml
 ```
 
 Preprocessing is written to a new timestamped run directory and that exact
@@ -73,17 +76,24 @@ astrai train-generator \
   --prep preprocessed/YYYYMMDD_HHMMSS_default_split
 ```
 
-### Train (unified model)
+### Training and historical Unified checkpoints
 
-Single model with both branches trained jointly:
+PPReg and LCGen have independent supervision, optimisers, schedulers and
+checkpoint selection. PPReg uses clean curves and one augmented curve per
+original, paired with the same parameters. Its existing ensemble has one
+subnetwork per parameter and one optimiser, scheduler and checkpoint for the
+whole ensemble. LCGen uses exactly one parameter-to-clean-curve pair per
+original. Both retain their supervised MSE loss; no reconstruction loss or
+gradient path connects the networks. The PPReg → LCGen cascade is used only
+for inference and diagnostics.
 
-```bash
-astrai train --config configs/default.yaml
-```
-
-The Characterizer is trained on clean and augmented curves paired with the
-same parameters. LCGen receives those duplicated parameters and is supervised
-against the corresponding clean PCA-compressed curve in both cases.
+Shared Unified training is retired. `astrai train` and `UnifiedModel.fit`
+fail with migration guidance before creating artefacts; `astrai train --help`
+remains available. Use a split configuration for new training: historical
+Unified configurations are not converted automatically. The historical model
+container, state dictionaries, checkpoint loader, `astrai infer` and
+`astrai visualize-reconstruction` remain supported for evaluating existing
+Unified checkpoints.
 
 ### Inference
 
@@ -118,7 +128,8 @@ to the explicit destination or to the documented current-directory default.
 | --- | --- | --- |
 | `pipeline` | dataset from config | preprocessing and two experiment runs |
 | `preprocess` | dataset from config | isolated preprocessing run |
-| `train`, `train-characterizer`, `train-generator` | data/preprocessing and config | isolated experiment run |
+| `train-characterizer`, `train-generator` | shared preprocessing and config | isolated experiment run |
+| `train` (retired) | none | informative error; `--help` remains available |
 | `infer`, `infer-split` | checkpoints and input dataset | terminal metrics; optional predictions Parquet |
 | `infer-real single` | bol file, name, two experiment runs, explosion epoch or catalogue | one PDF |
 | `infer-real batch` | bol directory, catalogue, two experiment runs | one PDF per object and a parameter CSV |
@@ -364,8 +375,8 @@ of observations is imposed. `apply_lsst_pipeline` is an alias with the same
 new explicit noise configuration and seed arguments.
 
 The `augmentation.masking` mapping contains the parameters shown in the
-supplied configurations. Missing fields use the same defaults in preprocessing,
-Unified and diagnostics; unknown fields and invalid combinations are rejected.
+supplied configurations. Missing fields use the same defaults in preprocessing
+and diagnostics; unknown fields and invalid combinations are rejected.
 Defaults are exploratory, not observationally calibrated:
 
 - Daylight is an annual sinusoid of 12 +/- 2 equivalent hours, with random phase.
@@ -426,7 +437,7 @@ its newly generated corruption is not a reproduction of a historical observing m
 
 Preprocessing schema 8 identifies the resolved noise recipe, RNG policy, masking
 parameters and interpolation policy in `view_configuration`; training metadata
-version 7 records the same identity. Precomputed training views from earlier
+version 8 records the same identity. Precomputed training views from earlier
 schemas must be regenerated. Training rejects mismatched recipes, seed plans
 and fold augmentation records. There is no migration of intermediate noise
 configurations or precomputed views.
@@ -501,7 +512,7 @@ cadence, observed bolometric population statistics or downstream model quality.
 
 ### Configured noise augmentation
 
-Preprocessing, separate and unified training, and reconstruction diagnostics
+Preprocessing, independent training and reconstruction diagnostics
 use one explicit `augmentation.noise` mapping. All supplied configurations use:
 
 ```yaml
@@ -636,9 +647,8 @@ K-fold splitter continues to use the configured base seed directly, preserving
 the configured fold assignment.
 
 To select a different set of random streams, change only `random_seed` in the
-configuration file: `preprocessing.random_seed` for the split pipeline or
-`training.random_seed` for the unified model. The value must be an integer from
-0 to 4294967295. All stage-specific and fold-specific seeds are derived
+configuration file: `preprocessing.random_seed` for the split pipeline.
+The value must be an integer from 0 to 4294967295. All stage-specific and fold-specific seeds are derived
 automatically and should not be configured individually.
 
 Preprocessing and diagnostic augmentation use explicit local NumPy generators
@@ -660,15 +670,15 @@ Existing partition, PCA, model and DataLoader seed derivations are unchanged.
 Preprocessing records each fold's effective child seeds in
 `augmentation_seed_plans` and the applied recipe, input shape, row-major order
 and heteroscedastic excluded-zero count in its fold bundle's `augmentation`
-record. Separate training snapshots that provenance; unified training records
-it under `augmentation` in experiment metadata. These records identify the
-noise recipe version as well as the RNG policy version. Exact replay requires
+record. Each independent training stage snapshots that provenance. Historical
+Unified runs recorded it under `augmentation` in experiment metadata. These
+records identify the noise recipe version as well as the RNG policy version. Exact replay requires
 the same inputs, order and environment; batch regrouping is not invariant.
 
 Before every training fold, ASTRAI seeds Python, NumPy and PyTorch, enables
 deterministic PyTorch algorithms, configures deterministic cuDNN behaviour and
 uses an explicitly seeded DataLoader generator. Model and DataLoader seeds are
-derived independently for the Characterizer, Generator and unified model. A
+derived independently for the Characterizer and Generator. A
 fold therefore has the same random streams whether it is trained alone or
 after other stages or folds.
 
@@ -707,7 +717,13 @@ in epoch or fold selection.
 
 Trains a `MLPWithResiduals` to reconstruct clean PCA-compressed curves from
 scaled transformed physical parameters. Each training sample contributes one
-parameter-to-clean-curve pair.
+parameter-to-clean-curve pair, without augmented targets or duplicated originals.
+The loss remains MSE on PCA coefficients of standardised clean curves.
+Checkpoint selection defaults to global RMSE after reversing PCA and curve
+standardisation, comparing decoded predictions with the clean validation
+curves in their original representation. RMSE is minimised across all samples
+and time points together. R2, RMSE, RRMSE and MAE remain evaluation metrics.
+An explicitly configured supported selection metric is still honoured.
 
 ```bash
 astrai train-generator \
@@ -725,8 +741,17 @@ and generation code.
 The generic `infer` and `infer-split` commands, as well as single and batch
 real-data inference, display and persist parameter predictions in physical
 space. Direct PPReg-to-LCGen handoff remains in scaled transformed space and
-is accepted only when the two target scalers and transformation contracts are
-compatible.
+requires a verified pair from the same outer fold, dataset, training pool and
+preprocessing bundle, with identical parameter order, transformations, units
+and scaler state. The selected epochs may differ. The shared check is used by
+`infer-real`, `benchmark-inference` and `plot-results`. Historical split pairs
+without verifiable provenance are rejected with an informative error; there is
+no implicit association or conversion. A shared `pipeline_run_id` or matching
+scaler numbers alone does not establish compatibility. To obtain a compatible
+pair, train both stages with the same `test_fold` and preprocessing run.
+
+`infer` and `infer-split` report characterisation and generation conditioned on
+true parameters; they do not measure the complete PPReg → LCGen cascade.
 
 For SN2018HNA, the catalogue explosion epoch is `58411.3`. The numeric epoch
 and current unit convention are preserved as-is; no discovery epoch or unit
@@ -864,7 +889,7 @@ interactive window is wanted.
 
 All hyperparameters are set via YAML config files in `configs/`.
 
-### `configs/default_split.yaml` (split pipeline)
+### `configs/default_split.yaml` and `configs/7par_split.yaml` (independent training)
 
 | Section | Key Parameters |
 |---------|---------------|
@@ -874,23 +899,20 @@ All hyperparameters are set via YAML config files in `configs/`.
 | `characterizer` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 | `generator` | `model` (width, depth, dropout), `training` (`test_fold`, `batch_size`, `epochs`, `learning_rate`, validation and selection controls) |
 
-### `configs/default.yaml` (unified model)
-
-| Section | Key Parameters |
-|---------|---------------|
-| `data` | Same as above |
-| `model` | `pca_components`, `width`, `depth`, `dropout` |
-| `training` | `batch_size`, `epochs`, `learning_rate`, `n_splits`, `random_seed`, validation and selection controls |
-| `loss` | `alpha_char`, `alpha_gen` (loss weights) |
-| `augmentation` | Same explicit noise and masking contract as above |
+`default_split.yaml` configures the four-parameter NPY/CSV dataset;
+`7par_split.yaml` configures the seven-parameter Parquet dataset. Both are also
+packaged for installed CLI use. `default.yaml` and `4par.yaml` retain their
+historical Unified structure for inference and visualisation, including the
+original model and loss settings; they do not enable shared training.
 
 `partitioning.validation_fraction` sets the shared validation split. Legacy
 training-section fractions must agree. Every training section accepts
-`checkpoint_selection.metric`. Supported selection metrics are `R2` (the
-default, maximised), `RMSE`, `RRMSE` and `MAE` (minimised). The metric space is
-fixed by the model contract: transformed aggregate characterisation for the
-Characterizer and unified model, and flattened light-curve space for the
-Generator.
+`checkpoint_selection.metric`. Supported selection metrics are `R2`
+(maximised), `RMSE`, `RRMSE` and `MAE` (minimised). PPReg defaults to the
+unweighted mean per-parameter R2 in transformed parameter space; LCGen defaults
+to global RMSE in decoded clean light-curve space. The criterion affects
+checkpoint selection only; the supervised MSE losses are unchanged. Parameter
+weights and independent per-subnetwork checkpoints are not configurable.
 
 `epochs` is always the maximum epoch count. `early_stopping.enabled` defaults
 to `false`, so all configured epochs run while the best validation epoch is
@@ -947,8 +969,12 @@ runs started by `astrai pipeline` share a
 `pipeline_run_id`, and each snapshots the metadata of its completed
 preprocessing input. New split training validates canonical data identity, shared
 partitions and each fold bundle before optimisation. Model reload validates the
-selected checkpoint and its preprocessing association. Unified runs retain
-canonical source arrays and their partition plan alongside the experiment.
+selected checkpoint and its preprocessing association. Training metadata
+version 8 records the independent supervised topology, whole-stage
+optimisation, supervision, loss space and selection aggregation in
+`training_contract`. The resolved metric and direction remain in
+`checkpoint.selection_policy`. Historical Unified runs retain their existing
+canonical source arrays and partition plan alongside the experiment.
 
 Source provenance follows the installed `astrai` package location rather than
 the process working directory. An editable checkout records that checkout's
@@ -981,6 +1007,7 @@ configuration compatibility while keeping all output within the current run.
 | Training experiments | 5 | Fold preprocessing provenance, selected checkpoint association and recoverable unified preprocessing sources |
 | Training experiments | 6 | Effective augmentation view configuration, including the masking recipe |
 | Training experiments | 7 | Resolved noise and RNG identity, applied unified fold recipes and separate preprocessing provenance |
+| Training experiments | 8 | Explicit independent supervision, loss space, optimisation scope and selection aggregation |
 
 ## Metrics
 

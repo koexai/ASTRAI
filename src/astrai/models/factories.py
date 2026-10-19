@@ -30,7 +30,7 @@ def build_generator(cfg):
 
 
 def build_unified_model(cfg):
-    """Build the jointly trained model described by a unified config."""
+    """Build the historical checkpoint container from a unified config."""
     model_cfg = cfg["model"]
     n_pca = model_cfg["pca_components"]
     n_params = cfg["data"]["n_params"]

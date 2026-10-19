@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-from astrai.cli import train, train_characterizer, train_generator
+from astrai.cli import train_characterizer, train_generator
 from astrai.utils.metrics import compute_selection_metric
 from astrai.utils.training import (
     ValidationSelectionTracker,
@@ -92,6 +92,25 @@ class TrainingControlTests(unittest.TestCase):
             resolve_test_fold({"test_fold": None, "held_out_fold": 4})
 
 
+class GeneratorSelectionTests(unittest.TestCase):
+    def test_generator_default_minimises_rmse(self):
+        policy = resolve_training_control({}, "RMSE", default_metric="RMSE")["selection_policy"]
+        self.assertEqual(policy["metric"], "RMSE")
+        self.assertEqual(policy["mode"], "min")
+
+    def test_explicit_metric_overrides_generator_default(self):
+        policy = resolve_training_control(
+            {"checkpoint_selection": {"metric": "R2"}}, "R2", default_metric="RMSE"
+        )["selection_policy"]
+        self.assertEqual(policy["metric"], "R2")
+        self.assertEqual(policy["mode"], "max")
+
+    def test_rmse_remains_finite_for_constant_validation_curves(self):
+        curves = np.full((3, 4), 42.0)
+        score = compute_selection_metric(curves, curves + 0.5, "RMSE")
+        self.assertEqual(score, 0.5)
+
+
 class ValidationSplitTests(unittest.TestCase):
     def test_split_is_reproducible_disjoint_and_covers_development_pool(self):
         first = split_development_indices(10, 0.2, 123)
@@ -178,6 +197,22 @@ class SelectionTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.selected_epoch, 4)
         self.assertEqual(tracker.selected_score, 1.5)
 
+    def test_checkpoint_restores_all_ensemble_parameters_and_buffers(self):
+        from astrai.models.factories import build_characterizer
+        model = build_characterizer({"data": {"n_params": 2},
+            "preprocessing": {"pca_components": 3},
+            "characterizer": {"model": {"width": 4, "depth": 1, "dropout": 0.0}}})
+        expected = {key: value.clone() for key, value in model.state_dict().items()}
+        tracker = ValidationSelectionTracker(metric="R2", mode="max")
+        tracker.observe(1, .8, model, 1., .01)
+        with torch.no_grad():
+            for value in model.state_dict().values():
+                value.add_(1)
+        tracker.observe(2, .7, model, .9, .005)
+        tracker.restore_selected_checkpoint(model)
+        for key, value in model.state_dict().items():
+            torch.testing.assert_close(value, expected[key], rtol=0, atol=0)
+
     def test_disabled_early_stopping_runs_all_epochs_and_restores_best(self):
         model = torch.nn.Linear(1, 1, bias=False)
         optimiser = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -225,23 +260,6 @@ class SelectionScoreConsistencyTests(unittest.TestCase):
         )
 
         self.assertEqual(score, 0.75)
-
-    def test_unified_selection_matches_characterisation_validation_metric(self):
-        complete = {
-            "characterization": {
-                "transformed": {"aggregate": {"MAE": 0.125}},
-                "physical": {"per_parameter": {}},
-            },
-            "generation": {"MAE": 2.0},
-        }
-
-        score = assert_selected_validation_score(
-            0.125,
-            complete,
-            "characterization.transformed.aggregate.MAE",
-        )
-
-        self.assertEqual(score, 0.125)
 
     def test_semantic_divergence_between_selection_paths_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
@@ -295,79 +313,25 @@ class SelectionScoreConsistencyTests(unittest.TestCase):
             "transformed.aggregate.R2",
         )
 
-    def test_unified_lightweight_and_complete_paths_agree(self):
-        true = np.array([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]])
-        pred = np.array([[1.0, 12.0], [3.0, 18.0], [2.0, 33.0]])
-        inputs = np.ones((3, 2))
-        scaler = _IdentityTransformer()
-        model = type(
-            "FixedUnifiedModel",
-            (),
-            {
-                "regressor": _FixedPredictionModel(pred),
-                "generator": _FixedPredictionModel(inputs),
-                "eval": lambda self: self,
-            },
-        )()
-
-        predicted = train._predict_unified_characterisation_transformed(
-            model,
-            inputs,
-            scaler,
-            torch.device("cpu"),
-        )
-        selected_score = compute_selection_metric(
-            true,
-            predicted,
-            "R2",
-            n_columns=2,
-        )
-        characterisation, generation = train._evaluate_fold(
-            model,
-            inputs,
-            true,
-            true,
-            inputs,
-            scaler,
-            scaler,
-            scaler,
-            2,
-            torch.device("cpu"),
-            {
-                "data": {
-                    "n_params": 2,
-                    "param_names": ["Mass", "Energy"],
-                    "target_transform": "log1p",
-                }
-            },
-        )
-
-        assert_selected_validation_score(
-            selected_score,
-            {
-                "characterization": characterisation,
-                "generation": generation,
-            },
-            "characterization.transformed.aggregate.R2",
-        )
-
     def test_generator_lightweight_and_complete_paths_agree(self):
         target_curves = np.array([[1.0, 2.0], [3.0, 5.0]])
         model = _FixedPredictionModel(target_curves + 0.5)
-        transformer = _IdentityTransformer()
+        from sklearn.preprocessing import StandardScaler
+        transformer = StandardScaler().fit([[1.0, 10.0], [3.0, 50.0]])
+        pca = _IdentityTransformer()
         parameters = np.ones((2, 2))
 
         predictions = train_generator._predict_generator_curves(
             model,
             parameters,
             transformer,
-            transformer,
+            pca,
             torch.device("cpu"),
         )
         selected_score = compute_selection_metric(
             target_curves,
             predictions,
-            "MAE",
+            "RMSE",
         )
         complete = train_generator._evaluate_generator(
             model,
@@ -376,10 +340,12 @@ class SelectionScoreConsistencyTests(unittest.TestCase):
             "/unused",
             torch.device("cpu"),
             x_scaler=transformer,
-            pca=transformer,
+            pca=pca,
         )
+        self.assertAlmostEqual(selected_score, np.sqrt(np.mean((predictions - target_curves) ** 2)))
+        self.assertNotAlmostEqual(selected_score, 0.5)
 
-        assert_selected_validation_score(selected_score, complete, "MAE")
+        assert_selected_validation_score(selected_score, complete, "RMSE")
 
 
 if __name__ == "__main__":
