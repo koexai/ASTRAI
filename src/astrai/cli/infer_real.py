@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 
 from astrai.paths import resolve_config_path
+from astrai.utils.model_pairing import validate_cascade_pair
 from astrai.utils.target_transformations import (
     scaled_to_physical,
-    validate_parameter_scalers,
 )
 
 BOL_DIR = "data/real/87Alike_bolometric"
@@ -335,11 +335,7 @@ def _load_models(cfg, device, exp_char, exp_gen):
     char = load_characterizer(cfg, device, exp_char)
     print(f"Loading generator from: {exp_gen}")
     gen = load_generator(cfg, device, exp_gen)
-    validate_parameter_scalers(
-        char[2],
-        gen[2],
-        context="characterizer output and generator input scaling",
-    )
+    validate_cascade_pair(exp_char, exp_gen, char[2], gen[2])
     n_params = cfg["data"]["n_params"]
     if np.asarray(char[2].mean_).shape != (n_params,):
         raise ValueError(
